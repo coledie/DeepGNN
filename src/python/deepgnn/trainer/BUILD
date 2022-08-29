@@ -5,15 +5,15 @@ load("@rules_python//python:defs.bzl", "py_test", "py_library")
 load("@pip_deps//:requirements.bzl", "requirement")
 
 py_library(
-    name = "deepgnn_pytorch_training",
+    name = "deepgnn_trainer",
     srcs = [
         "__init__.py",
         "args.py",
         "utils.py",
+        "start.py",
     ],
     deps = [
         "//src/python/deepgnn/pytorch/modeling:deepgnn_pytorch_modeling",
-        "//src/python/deepgnn/pytorch/encoding:deepgnn_pytorch_encoding",
     ],
     visibility = ["//visibility:public"],
 )

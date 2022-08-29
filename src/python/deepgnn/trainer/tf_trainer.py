@@ -1,23 +1,216 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Train TF models in eager mode."""
+"""Base class for all TF trainers."""
+import abc
 import os
-import time
 import tensorflow as tf
 import logging
-import numpy as np
-import random
-import json
-from typing import List, Union, Callable
-from deepgnn.tf.common.utils import log_model_info
-from deepgnn.tf.common.utils import node_embedding_to_string
-from deepgnn.tf.common.base_trainer import Trainer
-from deepgnn import (
-    LOG_PROPS_EVENT_START_WORKER,
-    LOG_PROPS_EVENT_END_WORKER,
-    LOG_PROPS_PLATFORM_TF,
-    log_telemetry,
-)
+
+from typing import Callable, Union, List
+
+
+class Trainer(abc.ABC):
+    """Abstract class for TF trainers."""
+
+    def __init__(
+        self,
+        model_dir: str,
+        seed: int,
+        task_index: int = 0,
+        worker_size: int = 1,
+        gpu: bool = False,
+        user_name: str = "",
+        job_id: str = "",
+        log_save_steps: int = 20,
+        summary_save_steps: int = 100,
+        checkpoint_save_secs: int = 3600,
+        logger: logging.Logger = None,
+    ):
+        """Initialize common fields.
+
+        Keras checkpoint callback will use the basename/dirname to construct the full
+        checkpoint path. Here we add a "/" to the end of the path.
+        """
+        self.model_dir = os.path.join(model_dir, "./")
+        self.seed = seed
+        self.task_index = task_index
+        self.worker_size = worker_size
+        self.gpu = gpu
+        self.user_name = user_name
+        self.job_id = job_id
+        self.log_save_steps = log_save_steps
+        self.summary_save_steps = summary_save_steps
+        self.checkpoint_save_secs = checkpoint_save_secs
+        # get custom logger if not none, otherwise using root logger
+        self.logger = logger if logger is not None else logging.getLogger()
+        self.logger.info(f"tensorflow version: {tf.__version__}")
+
+    @abc.abstractmethod
+    def set_random_seed(self, seed: int = None):
+        """Set random seed."""
+
+    @abc.abstractmethod
+    def train(
+        self,
+        dataset: tf.data.Dataset,
+        model: tf.keras.Model,
+        optimizer: Union[tf.keras.optimizers.Optimizer, tf.compat.v1.train.Optimizer],
+        loss: Union[str, Callable, tf.keras.losses.Loss] = None,
+        metrics: List[Union[str, Callable, tf.keras.metrics.Metric]] = None,
+        callbacks: List[tf.keras.callbacks.Callback] = None,
+        epochs: int = 1,
+        steps_per_epoch: int = None,
+    ):
+        """Training interface.
+
+        Args:
+        * dataset: tf.data.Dataset which is used to get subgraph.
+        * model: `tf.keras.Model`, train() will call `tf.keras.Model.__call__()` to calcluate embedding, loss and metrics.
+        * optimizer: training optimizer.
+        * loss: loss for training model, String (name of objective function), objective function or tf.keras.losses.Loss instance.
+            For TF1 models, loss is a Callable, return a tensor.
+        * metrics: metric_fn for evaluation in _train_step, List of metrics to be evaluated by the model during training and testing.
+            Each of this can be a string (name of a built-in function), function or a tf.keras.metrics.Metric instance.
+        * callbacks: List of keras.callbacks.Callback instances. For TF1 trainer callbacks are ignored, for TF2 trainer this callbacks
+            will be passed to `model.fit` API. The trainer has its own default callback list, and this callbacks parameter provides
+            an oppotunity for custom models to append their own callbacks.
+        * epochs: Number of epochs to train the model.
+        * steps_per_epoch: Number of steps to run in one epoch.
+        """
+
+    @abc.abstractmethod
+    def inference(
+        self,
+        dataset: tf.data.Dataset,
+        model: tf.keras.Model,
+        embedding_to_str_fn: Callable,
+        output_embedding_file_prefix: str = "embedding",
+        steps: int = None,
+    ):
+        """Inference interface.
+
+        Args:
+        * dataset: tf.data.Dataset which is used to get subgraph.
+        * model: `tf.keras.Model`, train() will call `tf.keras.Model.__call__()` to calcluate embedding, loss and metrics.
+        * embedding_to_str_fn: convert a list of tensors to output string.
+        * output_embedding_file_prefix: the embedding file will be {model_dir}/{prefix}_{task_index}.txt"
+        * steps: Number of steps to run.
+        """
+
+    @abc.abstractmethod
+    def evaluate(
+        self,
+        dataset: tf.data.Dataset,
+        model: tf.keras.Model,
+        loss: Union[str, Callable, tf.keras.losses.Loss] = None,
+        metrics: List[Union[str, Callable, tf.keras.metrics.Metric]] = None,
+        callbacks: List[tf.keras.callbacks.Callback] = None,
+        steps: int = None,
+    ):
+        """Evaluate model.
+
+        Args:
+        * dataset: tf.data.Dataset which is used to get subgraph.
+        * model: `tf.keras.Model`, evaluate() will call `tf.keras.Model.__call__()` to calcluate embedding, loss and metrics.
+        * loss: loss for training model, String (name of objective function), objective function or tf.keras.losses.Loss instance.
+            For TF1 models, loss is a Callable, return a tensor.
+        * metrics: metric_fn for evaluation in _train_step, List of metrics to be evaluated by the model during training and testing.
+            Each of this can be a string (name of a built-in function), function or a tf.keras.metrics.Metric instance.
+        * callbacks: List of keras.callbacks.Callback instances. For TF1 trainer callbacks are ignored, for TF2 trainer this callbacks
+            will be passed to `model.fit` API. The trainer has its own default callback list, and this callbacks parameter provides
+            an oppotunity for custom models to append their own callbacks.
+        * steps: Number of steps to run.
+        """
+
+
+class HorovodEagerTrainer(EagerTrainer):
+    """Train models in eager mode."""
+
+    def __init__(
+        self,
+        trainer: TrainerType,
+        model_dir: str,
+        seed: int,
+        user_name: str = "",
+        job_id: str = "",
+        gpu: bool = False,
+        log_save_steps: int = 20,
+        summary_save_steps: int = 100,
+        checkpoint_save_secs: int = 3600,
+        profile_batch: List[int] = [100, 100],
+        logger: logging.Logger = None,
+    ):
+        """Initialize trainer."""
+        hvd.init()
+        super().__init__(
+            model_dir=model_dir,
+            seed=seed,
+            user_name=user_name,
+            job_id=job_id,
+            gpu=gpu,
+            log_save_steps=log_save_steps,
+            summary_save_steps=summary_save_steps,
+            checkpoint_save_secs=checkpoint_save_secs,
+            profile_batch=profile_batch,
+            logger=logger,
+        )
+        assert trainer == TrainerType.HVD
+        self.logger.info(f"trainer - {trainer}")
+
+        self.task_index = hvd.rank()
+        self.worker_size = hvd.size()
+        self.lr_scaler = hvd.size()
+
+    def _set_gpu_device(self):
+        if self.gpu:
+            gpus = tf.config.experimental.list_physical_devices("GPU")
+            self.logger.info(f"all GPU devices: {gpus}")
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            assert len(gpus) > hvd.local_rank()
+            if gpus:
+                tf.config.experimental.set_visible_devices(
+                    gpus[hvd.local_rank()], "GPU"
+                )
+        else:
+            tf.config.set_visible_devices([], "GPU")
+        visible_devices = tf.config.get_visible_devices()
+        for device in visible_devices:
+            self.logger.info(f"device: {device}")
+
+    def _train_impl(
+        self, model, graph_dataset, optimizer, steps, loss, metrics, callbacks, epochs
+    ):
+        writer = self._get_summary_writer("train")
+        s1 = time.time()
+        model.compile(optimizer=optimizer, loss=loss, metrics=metrics)
+
+        def _log_fn(batch, logs):
+            self._save_summary(writer, batch, logs)
+
+        batch_callback = tf.keras.callbacks.LambdaCallback(
+            on_batch_end=_log_fn, on_train_end=lambda _: writer.close()
+        )
+
+        cbs = [hvd.callbacks.BroadcastGlobalVariablesCallback(0), batch_callback]
+        if callbacks:
+            cbs.extend(callbacks)
+
+        if hvd.rank() == 0:
+            tb_callback = tf.keras.callbacks.TensorBoard(
+                os.path.join(self.model_dir, "tboard")
+            )
+            cbs.append(keras.callbacks.ModelCheckpoint(self.checkpoint_file))
+            cbs.append(tb_callback)
+
+        model.fit(
+            graph_dataset,
+            epochs=epochs,
+            callbacks=cbs,
+            verbose=0,
+            steps_per_epoch=steps,
+        )
+        self.logger.info(f"training time: {time.time() - s1}")
 
 
 class _Stopwatch:

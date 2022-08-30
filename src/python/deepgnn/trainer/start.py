@@ -71,32 +71,36 @@ def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = 
     return args
 
 
-def run_dist(
-    init_model_fn: Callable,
-    init_dataset_fn: Callable,
-    init_optimizer_fn: Optional[Callable] = None,
-    init_args_fn: Optional[Callable] = None,
-    run_args: Optional[List] = None,
-    init_eval_dataset_for_training_fn: Optional[Callable] = None,
+def _train_loop(
+    config: dict
 ):
+    init_model_fn = config["init_model_fn"]
+    init_dataset_fn = config["init_dataset_fn"]
+    init_optimizer_fn = config["init_optimizer_fn"]
+    init_args_fn = config["init_args_fn"]
+    run_args = config["run_args"]
+    init_eval_dataset_for_training_fn = config["init_eval_dataset_for_training_fn"]
+
     args = get_args(init_args_fn, run_args)
-    backend = create_backend(
-        BackendOptions(args), is_leader=(args.rank == 0)
-    )  # TODO is_leader
 
     model = init_model_fn(args)
     model = train.torch.prepare_model(model)
+    model.train()
+
+    backend = create_backend(
+        BackendOptions(args), is_leader=(0 == 0)
+    )  # TODO is_leader
 
     dataset = init_dataset_fn(
         args=args,
         model=model,
-        rank=trainer.rank,
-        world_size=trainer.world_size,
+        rank=0,#trainer.rank,
+        world_size=1,#trainer.world_size,
         backend=backend,
     )
 
     optimizer = (
-        init_optimizer_fn(args=args, model=model, world_size=trainer.world_size)
+        init_optimizer_fn(args=args, model=model, world_size=1)#trainer.world_size)
         if init_optimizer_fn is not None
         else None
     )
@@ -114,21 +118,53 @@ def run_dist(
         """
         trainer.run(
             model,
-            torch.utils.data.DataLoader(
-                dataset=dataset,
-                num_workers=num_workers,
-                prefetch_factor=args.prefetch_factor,
-            ),
+            ,
             optimizer,
             eval_dataloader_for_training,
         )
         """
-        for epoch in range(args.num_epochs):
-            loss, pred, label = model(input)
+        d = torch.utils.data.DataLoader(
+                dataset=dataset,
+                num_workers=num_workers,
+                prefetch_factor=args.prefetch_factor,
+            )
+        for epoch, data in enumerate(d):
+            loss, pred, label = model(data)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             print(f"epoch: {epoch}, loss: {loss.item()}")
+
+
+def run_dist(
+    init_model_fn: Callable,
+    init_dataset_fn: Callable,
+    init_optimizer_fn: Optional[Callable] = None,
+    init_args_fn: Optional[Callable] = None,
+    run_args: Optional[List] = None,
+    init_eval_dataset_for_training_fn: Optional[Callable] = None,
+):
+    import ray
+    ray.init()
+    try:
+        trainer = TorchTrainer(
+            _train_loop,
+            train_loop_config={
+                "init_model_fn": init_model_fn,
+                "init_dataset_fn": init_dataset_fn,
+                "init_optimizer_fn": init_optimizer_fn,
+                "init_args_fn": init_args_fn,
+                "run_args": run_args,
+                "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
+            },
+            scaling_config=ScalingConfig(num_workers=1, use_gpu=False),
+        )
+
+        results = trainer.fit()
+    except Exception as e:
+        ray.shutdown()
+        raise e
+    ray.shutdown()
 
 
 if __name__ == "__main__":

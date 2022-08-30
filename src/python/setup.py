@@ -181,6 +181,47 @@ def deepgnn_pytorch(version: str):
     )
 
 
+def deepgnn_trainer(version: str):
+    """DeepGNN runtime."""  # noqa: D403
+    depens = [
+        "deepgnn-ge>=0.1",
+        "ray>=2.0.0",
+    ]
+
+    depens.extend(COMMON_PACKAGES)
+
+    setuptools.setup(
+        name="deepgnn-trainer",
+        version=version,
+        description="DeepGNN runtime.",
+        long_description="See [DeepGNN package](https://pypi.org/project/deepgnn-ge/) for detailed description.",
+        long_description_content_type="text/markdown",
+        url=CODE_URL,
+        author=AUTHOR,
+        author_email=AUTHOR_EMAIL,
+        packages=setuptools.find_packages(
+            include=["deepgnn", "deepgnn.trainer", "deepgnn.trainer.*"]
+        ),
+        install_requires=depens,
+        python_requires=">=3.7",
+        cmdclass={"clean": clean},
+        license="MIT",
+        classifiers=[
+            "Development Status :: 3 - Alpha",
+            "Intended Audience :: Developers",
+            "Intended Audience :: Science/Research",
+            "License :: OSI Approved :: MIT License",
+            "Programming Language :: Python :: 3",
+            "Programming Language :: Python :: 3.7",
+            "Programming Language :: Python :: 3.8",
+            "Programming Language :: Python :: 3.9",
+            "Programming Language :: Python :: 3.10",
+            "Topic :: Scientific/Engineering",
+            "Topic :: Software Development :: Libraries",
+        ],
+    )
+
+
 if __name__ == "__main__":
     assert len(sys.argv) >= 2
 
@@ -196,5 +237,7 @@ if __name__ == "__main__":
         deepgnn_pytorch(build_version)
     elif target == "deepgnn-tf":
         deepgnn_tf(build_version)
+    elif target == "deepgnn-trainer":
+        deepgnn_trainer(build_version)
     else:
         raise ValueError(f"invalid target: {target}")

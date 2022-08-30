@@ -9,7 +9,6 @@ py_library(
     srcs = [
         "__init__.py",
         "args.py",
-        "utils.py",
         "start.py",
     ],
     deps = [

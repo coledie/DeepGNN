@@ -145,7 +145,7 @@ def run_dist(
     init_eval_dataset_for_training_fn: Optional[Callable] = None,
 ):
     import ray
-    ray.init()
+    ray.init(num_cpus=2, num_gpus=0)
     try:
         trainer = TorchTrainer(
             _train_loop,

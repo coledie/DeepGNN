@@ -292,3 +292,4 @@ Finally we can train the model with `run_dist` function. We expect the loss to d
 	...     init_args_fn=init_args,
 	...		run_args=arg_list,
 	... )
+	== Status ==...

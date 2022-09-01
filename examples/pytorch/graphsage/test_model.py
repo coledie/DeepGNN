@@ -40,7 +40,7 @@ from model import SupervisedGraphSage, UnSupervisedGraphSage
 
 logger = get_logger()
 
-
+"""
 @pytest.fixture(scope="module")
 def train_supervised_graphsage(mock_graph):  # noqa: F811
     torch.manual_seed(0)
@@ -551,11 +551,6 @@ def train_unsupervised_graphsage_with_feature_encoder(tiny_graph):
 def test_unsupervised_graphsage_with_feature_encoder(
     train_unsupervised_graphsage_with_feature_encoder, tiny_graph
 ):
-    """This test is to go through the process of training a graphsage model with twinbert feature encoder.
-
-    Twinbert encoding on CPU is very time consuming, so we just run few steps with a random tiny graph,
-    and don't check exact metrics values.
-    """
     train_ctx = train_unsupervised_graphsage_with_feature_encoder
 
     graphsage = UnSupervisedGraphSage(
@@ -575,6 +570,50 @@ def test_unsupervised_graphsage_with_feature_encoder(
     mrr_values = train_ctx["mrr_values"]
     avg_mrr = sum(mrr_values) / len(mrr_values)
     assert avg_mrr > 0.5
+"""
+
+def test_graphsage_trainer():
+    torch.manual_seed(0)
+    np.random.seed(0)
+    num_classes = 7
+    label_dim = 7
+    label_idx = 1
+    feature_dim = 1433
+    feature_idx = 0
+    edge_type = 0
+
+    model_path = tempfile.TemporaryDirectory()
+    model_path_name = model_path.name + "/gnnmodel.pt"
+
+
+    import os
+    import platform
+    LIB_NAME = "libwrapper.so"
+    if platform.system() == "Windows":
+        LIB_NAME = "wrapper.dll"
+
+    #os.environ["SNARK_LIB_PATH"] = os.path.join(
+    #    "/home/user/DeepGNN/bazel-bin", "src", "cc", "lib", LIB_NAME
+    #)
+
+
+    run_args = f"""--data_dir /tmp/cora --mode train --seed 123 \
+--backend snark --graph_type local --converter skip \
+--batch_size 140 --learning_rate 0.005 --num_epochs 1 \
+--node_type 0 --max_id -1 \
+--model_dir {model_path.name} --metric_dir {model_path.name} --save_path {model_path.name} \
+--feature_idx 1 --feature_dim 50 --label_idx 0 --label_dim 121 --algo supervised \
+--log_by_steps 1 --use_per_step_metrics""".split()
+
+    from main import init_args, create_model, create_dataset, create_optimizer
+    from deepgnn.trainer.start import run_dist
+    run_dist(
+        init_model_fn=create_model,
+        init_dataset_fn=create_dataset,
+        init_optimizer_fn=create_optimizer,
+        init_args_fn=init_args,
+        run_args=run_args
+    )
 
 
 if __name__ == "__main__":

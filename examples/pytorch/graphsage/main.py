@@ -11,7 +11,7 @@ from deepgnn.pytorch.common import MRR, F1Score
 from deepgnn.pytorch.common.utils import get_feature_type, set_seed
 from deepgnn.pytorch.encoding import get_feature_encoder
 from deepgnn.pytorch.modeling import BaseModel
-from deepgnn.pytorch.training import run_dist
+from deepgnn.trainer.start import run_dist
 from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset
 from deepgnn.graph_engine import (
     CSVNodeSampler,
@@ -127,8 +127,10 @@ def _main():
         init_dataset_fn=create_dataset,
         init_optimizer_fn=create_optimizer,
         init_args_fn=init_args,
+        run_args=sys.argv[1:],
     )
 
 
 if __name__ == "__main__":
+    import sys
     _main()

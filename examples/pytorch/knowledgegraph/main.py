@@ -8,7 +8,7 @@ import numpy as np
 from deepgnn import TrainMode, setup_default_logging_config
 from deepgnn.pytorch.common.utils import set_seed
 from deepgnn.pytorch.modeling import BaseModel
-from deepgnn.pytorch.training import run_dist
+from deepgnn.trainer.start import run_dist
 from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset
 from deepgnn.graph_engine import GEEdgeSampler, GraphEngineBackend
 from model import KGEModel

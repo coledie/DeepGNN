@@ -1,51 +1,32 @@
 """
 New trainer base.
 """
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from ray import train
-from ray.train.torch import TorchTrainer
-from ray.air.config import ScalingConfig
-
-
-class NeuralNetwork(nn.Module):
-    def __init__(self):
-        super(NeuralNetwork, self).__init__()
-        layer1 = nn.Linear(input_size, layer_size)
-        relu = nn.ReLU()
-        layer2 = nn.Linear(layer_size, output_size)
-
-    def forward(self, input):
-        return layer2(relu(layer1(input)))
-
-
-def train_func_distributed():
-    num_epochs = 3
-    model = NeuralNetwork()
-    model = train.torch.prepare_model(model)
-    loss_fn = nn.MSELoss()
-    optimizer = optim.SGD(model.parameters(), lr=0.1)
-
-    for epoch in range(num_epochs):
-        output = model(input)
-        loss = loss_fn(output, labels)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        print(f"epoch: {epoch}, loss: {loss.item()}")
-
 
 import argparse
 import torch
 from typing import Optional, Callable, List
-from deepgnn import get_logger
 from contextlib import closing
+import time
+from typing import Any, Optional, Dict, List
+
+from torch.nn import Module
+from torch.optim import Optimizer
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
+from ray import train
+from ray.train.torch import TorchTrainer
+from ray.air.config import ScalingConfig
+
+from deepgnn import get_logger
+from deepgnn.pytorch.modeling.base_model import BaseModel
 from deepgnn.pytorch.common import init_common_args
 from deepgnn.trainer.args import init_trainer_args, init_fp16_args
 from deepgnn.graph_engine import create_backend, BackendOptions
 from deepgnn.graph_engine.samplers import GENodeSampler, GEEdgeSampler
-
 from deepgnn.pytorch.common.consts import PREFIX_CHECKPOINT, PREFIX_EMBEDDING
 from deepgnn.pytorch.common.utils import (
     dump_gpu_memory,
@@ -63,9 +44,6 @@ from deepgnn import (
     LOG_PROPS_PLATFORM_PYTORCH,
     LOG_PROPS_EVENT_END_WORKER,
 )
-from torch.utils.tensorboard import SummaryWriter
-import numpy as np
-import time
 from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
 
 
@@ -93,298 +71,511 @@ def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = 
     return args
 
 
-def _train_loop(
-    config: dict
-):
-    def _save_checkpoint(epoch: int):
+class DeepGNNTrainer:
+    """
+    Pytorch trainer controls the workflow of training/evaluation/inference.
+
+    - Implementation in this class only works for sinle worker FP32 training requirement.
+    - For FP16 mixed precision training, please use FP16Trainer.
+    - For distributed training, please use DDPTrainer or HVDTrainer.
+    """
+
+    def __init__(self, config):
+        """Initialize trainer."""
+        self.logger = get_logger()
+        # Initialize rank, local_rank, world_size.
+        self.rank = 0
+        self.local_rank = 0
+        self.world_size = 1
+
+        # Initialize trainer state.
+        self.step = 0
+        self.global_step = 0
+        self.epochs_trained = 0
+        self.steps_in_epoch_trained = 0
+        self.start_time = time.time()
+        self.max_steps = 0
+
+        self.config = config
+
+    def run(
+        self, config
+    ):
+        """
+        Perform training/evaluation/inference according to training mode set in constructor.
+
+        Args:
+            model: target model.
+            dataset: dataset for training, evaluation or inference.
+            optimizer: optimizer for training.
+            eval_during_train_dataset: optional dataset for evaluation
+                during training.
+        """
+        init_model_fn = self.config["init_model_fn"]
+        init_dataset_fn = self.config["init_dataset_fn"]
+        init_optimizer_fn = self.config["init_optimizer_fn"]
+        init_args_fn = self.config["init_args_fn"]
+        run_args = self.config["run_args"]
+        init_eval_dataset_for_training_fn = self.config["init_eval_dataset_for_training_fn"]
+
+        self.args = get_args(init_args_fn, run_args)
+        self.backend = create_backend(BackendOptions(self.args), is_leader=(self.rank == 0))
+
+        self.model = init_model_fn(self.args)
+        self.dataset = init_dataset_fn(
+            args=self.args,
+            model=self.model,
+            rank=self.rank,
+            world_size=self.world_size,
+            backend=self.backend,
+        )
+        self.num_workers = (
+            0
+            if issubclass(self.dataset.sampler_class, (GENodeSampler, GEEdgeSampler))
+            else self.args.data_parallel_num
+        )
+        self.dataset = torch.utils.data.DataLoader(
+                dataset=self.dataset,
+                num_workers=self.num_workers,
+                prefetch_factor=self.args.prefetch_factor,
+            )
+
+        self.eval_dataset_for_training = None
+        self.eval_dataloader_for_training = None
+        if init_eval_dataset_for_training_fn is not None:
+            self.eval_dataset_for_training = init_eval_dataset_for_training_fn(
+                args=self.args,
+                model=self.model,
+                rank=self.rank,
+                world_size=self.world_size,
+                backend=self.backend,
+            )
+            if self.eval_dataset_for_training is not None:
+                self.eval_dataloader_for_training = torch.utils.data.DataLoader(
+                    dataset=self.eval_dataset_for_training,
+                    num_workers=self.args.data_parallel_num,
+                    prefetch_factor=self.args.prefetch_factor,
+                )
+        self.optimizer = (
+            init_optimizer_fn(args=self.args, model=self.model, world_size=self.world_size)
+            if init_optimizer_fn is not None
+            else None
+        )
+
+
+
+        self._init_max_steps()
+        model = self._initialize(self.model, self.dataset, self.optimizer, self.eval_dataset_for_training)
+        dataset = self.dataset
+        optimizer = self.optimizer
+        eval_dataset_for_training = self.eval_dataset_for_training
+
+        # On-demand enable telemetry.
+        log_telemetry(
+            self.logger,
+            f"Training worker started. Model: {self.model_name}.",
+            LOG_PROPS_EVENT_START_WORKER,
+            f"{self.args.mode}",
+            self.model_name,
+            self.args.user_name,
+            self.args.job_id,
+            self.rank,
+            self.world_size,
+            LOG_PROPS_PLATFORM_PYTORCH,
+        )
+
+        result = None
+        if self.args.mode == TrainMode.TRAIN:
+            assert self.optimizer is not None
+            self._train(model)
+        elif self.args.mode == TrainMode.EVALUATE:
+            result, loss = self._evaluate(model)
+        elif self.args.mode == TrainMode.INFERENCE:
+            self._inference(model)
+        else:
+            raise RuntimeError(f"Unsupported TrainMode:{self.args.mode}")
+
+        log_telemetry(
+            self.logger,
+            f"Training worker finished. Model: {self.model_name}.",
+            LOG_PROPS_EVENT_END_WORKER,
+            f"{self.args.mode}",
+            self.model_name,
+            self.args.user_name,
+            self.args.job_id,
+            self.rank,
+            self.world_size,
+            LOG_PROPS_PLATFORM_PYTORCH,
+        )
+
+        if self.args.gpu:
+            self.logger.info(self._wrap_log(dump_gpu_memory()))
+
+        return result
+
+    def _init_model(self, model: BaseModel):
+        self.model = model
+        self.model_name = type(self.model).__name__
+
+        if self.args.gpu:
+            torch.cuda.set_device(self.local_rank)
+            self.model.cuda()
+
+        if self.rank == 0:
+            if (
+                not self.args.enable_adl_uploader
+                or self.args.mode != TrainMode.INFERENCE
+            ):
+                os.makedirs(self.args.save_path, exist_ok=True)
+            print_model(self.model)
+            tally_parameters(self.model)
+
+        self._load_checkpoint()
+        return model
+
+    def _init_optimizer(self, optimizer: Optimizer):
+        self.lr_scheduler = self._create_lr_scheduler(optimizer)
+        return optimizer
+
+    def _initialize(
+        self,
+        model: BaseModel,
+        dataset: Any,
+        optimizer: Optional[Optimizer] = None,
+        eval_dataset_for_training: Any = None,
+    ):
+        model = self._init_model(model)
+        self.dataset = dataset
+        self.eval_dataset_for_training = eval_dataset_for_training
+        self.optimizer = self._init_optimizer(optimizer) if optimizer else optimizer
+
+        return model
+
+    def _train(self, model: Module):
+        self._init_summary_writer(prefix="train/worker")
+        model.train()
+
+        # Continous training from epoch and step saved in checkpoint.
+        self.step = self.steps_in_epoch_trained
+        for epoch in range(self.epochs_trained, self.args.num_epochs):
+            self._train_one_epoch(model, epoch)
+
+    def _train_one_epoch(self, model: Module, epoch: int):
+        for i, data in enumerate(self.dataset):
+            # Skip trained steps.
+            if i < self.step:
+                continue
+
+            self.train_losses = []  # type: List[float]
+            self.train_metrics = []  # type: List[float]
+            self._train_one_step(model, data, epoch)
+            if self._should_stop():
+                break
+
+        # Epoch finishes.
+        self.step = 0
+        if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
+            self._save_checkpoint(epoch + 1)
+
+    def _train_one_step(self, model: Module, data: Dict, epoch: int):
+        self._increment_step()
+        self._prepare_data(data)
+
+        self.optimizer.zero_grad()
+        loss, pred, label = self._train_one_step_internal(model, data)
+        self.train_losses.append(loss.data.item())
+
+        if self.lr_scheduler:
+            self.lr_scheduler.step()
+
+        if (
+            self.rank == 0
+            and self.args.save_ckpt_by_steps > 0
+            and self.step % self.args.save_ckpt_by_steps == 0
+        ):
+            self._save_checkpoint(epoch)
+
+        # Calculate training metrics for one batch data.
+        metric = (
+            self.model.compute_metric([pred], [label]).data.item()
+            if self.args.use_per_step_metrics
+            else torch.tensor(0.0)
+        )
+        self.train_metrics.append(metric)
+
+        if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
+            train_loss = np.mean(self.train_losses)
+            train_metric = np.mean(self.train_metrics)
+            self.train_losses = []
+            self.train_metrics = []
+            duration = self._check_duration()
+            self.summary_writer.add_scalar(
+                "Training/Loss", train_loss, self.global_step
+            )
+            self.summary_writer.add_scalar("Training/Time", duration, self.global_step)
+            if self.args.use_per_step_metrics:
+                self.summary_writer.add_scalar(
+                    f"Training/{self.model.metric_name()}",
+                    train_metric,
+                    self.global_step,
+                )
+            if self.lr_scheduler:
+                self.summary_writer.add_scalar(
+                    "Training/LR", self.lr_scheduler.get_last_lr()[0], self.global_step
+                )
+
+            self.logger.info(
+                self._wrap_log(
+                    f"epoch: {epoch}; step: {self.step:05d}; loss: {train_loss:.4f};"
+                    + (
+                        f" {self.model.metric_name()}: {train_metric:.4f}; time: {duration:.4f}s"
+                        if self.args.use_per_step_metrics
+                        else f" time: {duration:.4f}s"
+                    )
+                )
+            )
+
+        if (
+            self.eval_dataset_for_training is not None
+            and self.args.eval_during_train_by_steps > 0
+            and self.step % self.args.eval_during_train_by_steps == 0
+        ):
+            model.eval()
+            eval_metric, eval_loss = self._evaluate(model)
+            if self.args.use_per_step_metrics:
+                self.summary_writer.add_scalar(
+                    f"Validation/{self.model.metric_name()}",
+                    eval_metric,
+                    self.global_step,
+                )
+                self.summary_writer.add_scalar(
+                    "Validation/Loss", eval_loss, self.global_step
+                )
+            self.logger.info(
+                self._wrap_log(
+                    f"epoch: {epoch}; step: {self.step:05d};"
+                    + (
+                        f" Validation/{self.model.metric_name()}: {eval_metric:.4f}, Validation/Loss: {eval_loss:.4f}"
+                        if self.args.use_per_step_metrics
+                        else ""
+                    )
+                )
+            )
+            model.train()
+
+    def _train_one_step_internal(self, model: Module, data: Dict):
+        loss, pred, label = model(data)
+        loss.backward()
+        if self.args.clip_grad:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.grad_max_norm)
+        self.optimizer.step()
+        return loss, pred, label
+
+    def _evaluate(self, model: Module):
+        if self.args.mode != TrainMode.TRAIN:
+            self._init_summary_writer(prefix="evaluate/worker")
+        model.eval()
+
+        preds = []
+        labels = []
+        eval_metrics = []
+        eval_losses = []
+        data_size = 0
+        dataset = (
+            self.eval_dataset_for_training
+            if self.args.mode == TrainMode.TRAIN
+            else self.dataset
+        )
+        assert dataset is not None
+        with torch.no_grad():
+            for data in dataset:
+                pred, label, loss = self._evaluate_one_step(model, data)
+                data_size += pred.size(0)
+                eval_losses.append(loss.data.item())
+
+                if self.args.use_per_step_metrics:
+                    metric = self.model.compute_metric([pred], [label])
+                    eval_metrics.append(metric.data.item())
+                else:
+                    preds.append(pred.detach().cpu())
+                    labels.append(label.detach().cpu())
+
+                if self._should_stop():
+                    break
+
+        if self.args.use_per_step_metrics:
+            eval_metric = np.mean(eval_metrics) if len(eval_metrics) > 0 else 0
+            eval_metric = torch.tensor(eval_metric)
+        else:
+            eval_metric = self.model.compute_metric(preds, labels)
+        self.logger.info(
+            self._wrap_log(
+                f"Evaluation {self.model.metric_name()}: {eval_metric:.4f}; data size: {data_size};"
+            )
+        )
+        eval_loss = np.mean(eval_losses) if len(eval_losses) > 0 else 0
+        eval_loss = torch.tensor(eval_loss)
+        return eval_metric, eval_loss
+
+    def _evaluate_one_step(self, model: Module, data: Dict):
+        is_eval_during_training = self.args.mode == TrainMode.TRAIN
+        if not is_eval_during_training:
+            self._increment_step()
+        self._prepare_data(data)
+
+        loss, pred, label = self._evaluate_one_step_internal(model, data)
+
+        if (
+            not is_eval_during_training
+            and self.args.log_by_steps > 0
+            and self.step % self.args.log_by_steps == 0
+        ):
+            duration = self._check_duration()
+            loss_val = loss.data.item()
+            self.summary_writer.add_scalar(
+                "Evaluation/Loss", loss_val, self.global_step
+            )
+            self.summary_writer.add_scalar(
+                "Evaluation/Time", duration, self.global_step
+            )
+            self.logger.info(
+                self._wrap_log(
+                    f"step: {self.step:05d}; loss: {loss_val:.4f}; time: {duration:.4f}s"
+                )
+            )
+
+        return pred, label, loss
+
+    def _evaluate_one_step_internal(self, model: Module, data: Dict):
+        return model(data)
+
+    def _inference(self, model: Module):
+        self._init_summary_writer(prefix="inference/worker")
+        model.eval()
+
+        with self._get_embedding_writer() as fp:
+            with torch.no_grad():
+                for data in self.dataset:
+                    self._inference_one_step(model, data, fp)
+                    if self._should_stop():
+                        break
+
+    def _inference_one_step(self, model: Module, data: Dict, fp: Any):
+        self._increment_step()
+        self._prepare_data(data)
+
+        embedding = self._inference_one_step_internal(model, data)
+        self.model.output_embedding(fp, data, embedding)
+
+        if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
+            duration = self._check_duration()
+            self.summary_writer.add_scalar("Inference/Time", duration, self.global_step)
+            self.logger.info(
+                self._wrap_log(f"step: {self.step:05d}; time: {duration:.4f}s")
+            )
+
+    def _inference_one_step_internal(self, model: Module, data: Dict):
+        return self.model.get_embedding(data)
+
+    def _increment_step(self):
+        self.step += 1
+        self.global_step += 1
+
+    def _should_stop(self):
+        return self.max_steps > 0 and self.step >= self.max_steps
+
+    def _init_summary_writer(self, prefix: str):
+        self.summary_writer = SummaryWriter(
+            os.path.join(self.args.metric_dir, f"{prefix}-{self.rank}")
+        )
+
+    def _check_duration(self):
+        duration = time.time() - self.start_time
+        self.start_time = time.time()
+        return duration
+
+    def _prepare_data(self, data: Dict):
+        if self.args.gpu:
+            to_cuda(data)
+
+    def _wrap_log(self, content: str):
+        return f"[{self.world_size},{self.rank}] {content}"
+
+    def _create_lr_scheduler(self, optimizer: Optimizer):
+        num_training_steps = self.max_steps * self.args.num_epochs
+        return (
+            get_linear_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=self.args.warmup * num_training_steps,
+                num_training_steps=num_training_steps,
+            )
+            if self.max_steps > 0
+            else None
+        )
+
+    def _save_checkpoint(self, epoch: int):
         # Don't save for last step to avoid duplication with ckpt after epoch finished.
-        if max_steps > 0 and step == max_steps:
+        if self.max_steps > 0 and self.step == self.max_steps:
             return
 
         save_path = os.path.join(
-            f"{args.save_path}",
-            f"{PREFIX_CHECKPOINT}-{epoch:03}-{step:06}.pt",
+            f"{self.args.save_path}",
+            f"{PREFIX_CHECKPOINT}-{epoch:03}-{self.step:06}.pt",
         )
         torch.save(
-            {"state_dict": model.state_dict(), "epoch": epoch, "step": step},
+            {"state_dict": self.model.state_dict(), "epoch": epoch, "step": self.step},
             save_path,
         )
-        logger.info(_wrap_log(f"Saved checkpoint to {save_path}."))
-        rotate_checkpoints(args.save_path, args.max_saved_ckpts)
-    def _wrap_log(content: str):
-        return f"[{world_size},{rank}] {content}"
+        self.logger.info(self._wrap_log(f"Saved checkpoint to {save_path}."))
+        rotate_checkpoints(self.args.save_path, self.args.max_saved_ckpts)
 
-    def _load_checkpoint(ckpt_path: str = None):
+    def _load_checkpoint(self, ckpt_path: str = None):
         if not ckpt_path:
             # Search and sort checkpoints from model path.
-            ckpts = get_sorted_checkpoints(args.model_dir)
+            ckpts = get_sorted_checkpoints(self.args.model_dir)
             ckpt_path = ckpts[-1] if len(ckpts) > 0 else None
 
         if ckpt_path is not None:
 
             init_ckpt = torch.load(ckpt_path, map_location="cpu")
-            epochs_trained = init_ckpt["epoch"]
-            steps_in_epoch_trained = init_ckpt["step"]
+            self.epochs_trained = init_ckpt["epoch"]
+            self.steps_in_epoch_trained = init_ckpt["step"]
 
             # Only worker with rank 0 loads state dict.
-            if rank == 0:
-                model.load_state_dict(init_ckpt["state_dict"])
-                logger.info(
-                    _wrap_log(
+            if self.rank == 0:
+                self.model.load_state_dict(init_ckpt["state_dict"])
+                self.logger.info(
+                    self._wrap_log(
                         f"Loaded initial checkpoint: {ckpt_path},"
-                        f" trained epochs: {epochs_trained}, steps: {steps_in_epoch_trained}"
+                        f" trained epochs: {self.epochs_trained}, steps: {self.steps_in_epoch_trained}"
                     )
                 )
 
             del init_ckpt
 
-    local_rank = 0
-    steps_in_epoch_trained = 0
-    rank = 0
-    world_size = 1
-    max_steps = -1
-
-
-    init_model_fn = config["init_model_fn"]
-    init_dataset_fn = config["init_dataset_fn"]
-    init_optimizer_fn = config["init_optimizer_fn"]
-    init_args_fn = config["init_args_fn"]
-    run_args = config["run_args"]
-    init_eval_dataset_for_training_fn = config["init_eval_dataset_for_training_fn"]
-
-    args = get_args(init_args_fn, run_args)
-
-    model = init_model_fn(args)
-    model = train.torch.prepare_model(model)
-    model.train()
-
-    if args.gpu:
-        torch.cuda.set_device(local_rank)
-        model.cuda()
-
-    if rank == 0:
-        if (
-            not args.enable_adl_uploader
-            or args.mode != TrainMode.INFERENCE
-        ):
-            os.makedirs(args.save_path, exist_ok=True)
-        print_model(model)
-        tally_parameters(model)
-
-    _load_checkpoint()
-
-    backend = create_backend(
-        BackendOptions(args), is_leader=(rank == 0)
-    )
-
-    dataset = init_dataset_fn(
-        args=args,
-        model=model,
-        rank=rank,
-        world_size=world_size,
-        backend=backend,
-    )
-
-    optimizer = (
-        init_optimizer_fn(args=args, model=model, world_size=world_size)
-        if init_optimizer_fn is not None
-        else None
-    )
-    if optimizer:
-        num_training_steps = max_steps * args.num_epochs
-        lr_scheduler = get_linear_schedule_with_warmup(
-                optimizer,
-                num_warmup_steps=args.warmup * num_training_steps,
-                num_training_steps=num_training_steps,
-            ) if max_steps > 0 else None
-
-    num_workers = (
-        0
-        if issubclass(dataset.sampler_class, (GENodeSampler, GEEdgeSampler))
-        else args.data_parallel_num
-    )
-
-    logger=get_logger()
-
-
-    model_name = type(model).__name__
-
-    max_steps = (
-        args.max_samples // (world_size * args.batch_size)
-        if args.max_samples > 0
-        else -1
-    )
-    logger.info(_wrap_log(f"Max steps per epoch:{max_steps}"))
-
-    # On-demand enable telemetry.
-    log_telemetry(
-        logger,
-        f"Training worker started. Model: {model_name}.",
-        LOG_PROPS_EVENT_START_WORKER,
-        f"{args.mode}",
-        model_name,
-        args.user_name,
-        args.job_id,
-        rank,
-        world_size,
-        LOG_PROPS_PLATFORM_PYTORCH,
-    )
-
-    result = None
-
-    epochs_trained = 0
-    with closing(backend):
-        start_time = time.time()
-        summary_writer = SummaryWriter(
-            os.path.join(args.metric_dir, f"train/worker-{rank}")
+    def _init_max_steps(self):
+        self.max_steps = (
+            self.args.max_samples // (self.world_size * self.args.batch_size)
+            if self.args.max_samples > 0
+            else -1
         )
-        model.train()
-        lr_scheduler = None
+        self.logger.info(self._wrap_log(f"Max steps per epoch:{self.max_steps}"))
 
-        # Continous training from epoch and step saved in checkpoint.
-        step = steps_in_epoch_trained
-        global_step = step
-        for epoch in range(epochs_trained, args.num_epochs):
-            dataloader = torch.utils.data.DataLoader(
-                dataset=dataset,
-                num_workers=num_workers,
-                prefetch_factor=args.prefetch_factor,
+    def _get_embedding_writer(self):
+        embed_path = os.path.join(
+            self.args.save_path, f"{PREFIX_EMBEDDING}-{self.rank}"
+        )
+        if self.args.enable_adl_uploader:
+            uploader = AdlDataWriter(
+                process_num=self.args.uploader_process_num,
+                threads_per_process=self.args.uploader_threads_num,
+                queue_size=200,
+                store_name=self.args.uploader_store_name,
+                file_path_prefix=embed_path,
             )
-            for i, data in enumerate(dataloader):
-                # Skip trained steps.
-                if i < step:
-                    continue
 
-                train_losses = []  # type: List[float]
-                train_metrics = []  # type: List[float]
-
-                step += 1
-                global_step += 1
-                if args.gpu:
-                    to_cuda(data)
-
-                optimizer.zero_grad()
-
-                loss, pred, label = model(data)
-                loss.backward()
-                if args.clip_grad:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_max_norm)
-                optimizer.step()
-
-                train_losses.append(loss.data.item())
-
-                if lr_scheduler:
-                    lr_scheduler.step()
-
-                if (
-                    rank == 0
-                    and args.save_ckpt_by_steps > 0
-                    and step % args.save_ckpt_by_steps == 0
-                ):
-                    _save_checkpoint(epoch)
-
-                # Calculate training metrics for one batch data.
-                metric = (
-                    model.compute_metric([pred], [label]).data.item()
-                    if args.use_per_step_metrics
-                    else torch.tensor(0.0)
-                )
-                train_metrics.append(metric)
-
-                if args.log_by_steps > 0 and step % args.log_by_steps == 0:
-                    train_loss = np.mean(train_losses)
-                    train_metric = np.mean(train_metrics)
-                    train_losses = []
-                    train_metrics = []
-                    duration = time.time() - start_time
-                    start_time = time.time()
-                    summary_writer.add_scalar(
-                        "Training/Loss", train_loss, global_step
-                    )
-                    summary_writer.add_scalar("Training/Time", duration, global_step)
-                    if args.use_per_step_metrics:
-                        summary_writer.add_scalar(
-                            f"Training/{model.metric_name()}",
-                            train_metric,
-                            global_step,
-                        )
-                    if lr_scheduler:
-                        summary_writer.add_scalar(
-                            "Training/LR", lr_scheduler.get_last_lr()[0], global_step
-                        )
-
-                    logger.info(
-                        _wrap_log(
-                            f"epoch: {epoch}; step: {step:05d}; loss: {train_loss:.4f};"
-                            + (
-                                f" {model.metric_name()}: {train_metric:.4f}; time: {duration:.4f}s"
-                                if args.use_per_step_metrics
-                                else f" time: {duration:.4f}s"
-                            )
-                        )
-                    )
-
-                '''
-                if (
-                    eval_dataset_for_training is not None
-                    and eval_during_train_by_steps > 0
-                    and step % eval_during_train_by_steps == 0
-                ):
-                    model.eval()
-                    eval_metric, eval_loss = _evaluate(model)
-                    if args.use_per_step_metrics:
-                        summary_writer.add_scalar(
-                            f"Validation/{model.metric_name()}",
-                            eval_metric,
-                            global_step,
-                        )
-                        summary_writer.add_scalar(
-                            "Validation/Loss", eval_loss, global_step
-                        )
-                    logger.info(
-                        _wrap_log(
-                            f"epoch: {epoch}; step: {step:05d};"
-                            + (
-                                f" Validation/{model.metric_name()}: {eval_metric:.4f}, Validation/Loss: {eval_loss:.4f}"
-                                if args.use_per_step_metrics
-                                else ""
-                            )
-                        )
-                    )
-                    model.train()
-                '''
-
-                if max_steps > 0 and step >= max_steps:
-                    break
-
-
-            # Epoch finishes.
-            step = 0
-            if rank == 0 and epoch % args.save_ckpt_by_epochs == 0:
-                _save_checkpoint(epoch + 1)
-
-
-
-
-
-        log_telemetry(
-            logger,
-            f"Training worker finished. Model: {model_name}.",
-            LOG_PROPS_EVENT_END_WORKER,
-            f"{args.mode}",
-            model_name,
-            args.user_name,
-            args.job_id,
-            rank,
-            world_size,
-            LOG_PROPS_PLATFORM_PYTORCH,
-        )
-
-        if args.gpu:
-            logger.info(_wrap_log(dump_gpu_memory()))
-
-        return result
-
+            return uploader
+        return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 
 import deepgnn.graph_engine.snark._lib as lib
@@ -418,17 +609,19 @@ def run_dist(
     setup_module()
     import ray
     ray.init(num_cpus=2, num_gpus=0)
-    try:
-        trainer = TorchTrainer(
-            _train_loop,
-            train_loop_config={
+    config = {
                 "init_model_fn": init_model_fn,
                 "init_dataset_fn": init_dataset_fn,
                 "init_optimizer_fn": init_optimizer_fn,
                 "init_args_fn": init_args_fn,
                 "run_args": run_args,
                 "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
-            },
+            }
+    try:
+        base_trainer = DeepGNNTrainer(config)
+        trainer = TorchTrainer(
+            base_trainer.run,
+            train_loop_config=config,
             scaling_config=ScalingConfig(num_workers=1, use_gpu=False),
         )
 

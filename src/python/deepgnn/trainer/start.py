@@ -45,6 +45,7 @@ from deepgnn import (
     LOG_PROPS_EVENT_END_WORKER,
 )
 from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
+from deepgnn.graph_engine.adl_uploader import AdlDataWriter
 
 
 def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
@@ -258,118 +259,109 @@ class DeepGNNTrainer:
         # Continous training from epoch and step saved in checkpoint.
         self.step = self.steps_in_epoch_trained
         for epoch in range(self.epochs_trained, self.args.num_epochs):
-            self._train_one_epoch(model, epoch)
+            for i, data in enumerate(self.dataset):
+                # Skip trained steps.
+                if i < self.step:
+                    continue
 
-    def _train_one_epoch(self, model: Module, epoch: int):
-        for i, data in enumerate(self.dataset):
-            # Skip trained steps.
-            if i < self.step:
-                continue
+                self.train_losses = []  # type: List[float]
+                self.train_metrics = []  # type: List[float]
+                self._increment_step()
+                self._prepare_data(data)
 
-            self.train_losses = []  # type: List[float]
-            self.train_metrics = []  # type: List[float]
-            self._train_one_step(model, data, epoch)
-            if self._should_stop():
-                break
+                self.optimizer.zero_grad()
+                loss, pred, label = model(data)
+                loss.backward()
+                if self.args.clip_grad:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.grad_max_norm)
+                self.optimizer.step()
+                self.train_losses.append(loss.data.item())
 
-        # Epoch finishes.
-        self.step = 0
-        if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
-            self._save_checkpoint(epoch + 1)
+                if self.lr_scheduler:
+                    self.lr_scheduler.step()
 
-    def _train_one_step(self, model: Module, data: Dict, epoch: int):
-        self._increment_step()
-        self._prepare_data(data)
+                if (
+                    self.rank == 0
+                    and self.args.save_ckpt_by_steps > 0
+                    and self.step % self.args.save_ckpt_by_steps == 0
+                ):
+                    self._save_checkpoint(epoch)
 
-        self.optimizer.zero_grad()
-        loss, pred, label = self._train_one_step_internal(model, data)
-        self.train_losses.append(loss.data.item())
-
-        if self.lr_scheduler:
-            self.lr_scheduler.step()
-
-        if (
-            self.rank == 0
-            and self.args.save_ckpt_by_steps > 0
-            and self.step % self.args.save_ckpt_by_steps == 0
-        ):
-            self._save_checkpoint(epoch)
-
-        # Calculate training metrics for one batch data.
-        metric = (
-            self.model.compute_metric([pred], [label]).data.item()
-            if self.args.use_per_step_metrics
-            else torch.tensor(0.0)
-        )
-        self.train_metrics.append(metric)
-
-        if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
-            train_loss = np.mean(self.train_losses)
-            train_metric = np.mean(self.train_metrics)
-            self.train_losses = []
-            self.train_metrics = []
-            duration = self._check_duration()
-            self.summary_writer.add_scalar(
-                "Training/Loss", train_loss, self.global_step
-            )
-            self.summary_writer.add_scalar("Training/Time", duration, self.global_step)
-            if self.args.use_per_step_metrics:
-                self.summary_writer.add_scalar(
-                    f"Training/{self.model.metric_name()}",
-                    train_metric,
-                    self.global_step,
+                # Calculate training metrics for one batch data.
+                metric = (
+                    self.model.compute_metric([pred], [label]).data.item()
+                    if self.args.use_per_step_metrics
+                    else torch.tensor(0.0)
                 )
-            if self.lr_scheduler:
-                self.summary_writer.add_scalar(
-                    "Training/LR", self.lr_scheduler.get_last_lr()[0], self.global_step
-                )
+                self.train_metrics.append(metric)
 
-            self.logger.info(
-                self._wrap_log(
-                    f"epoch: {epoch}; step: {self.step:05d}; loss: {train_loss:.4f};"
-                    + (
-                        f" {self.model.metric_name()}: {train_metric:.4f}; time: {duration:.4f}s"
-                        if self.args.use_per_step_metrics
-                        else f" time: {duration:.4f}s"
+                if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
+                    train_loss = np.mean(self.train_losses)
+                    train_metric = np.mean(self.train_metrics)
+                    self.train_losses = []
+                    self.train_metrics = []
+                    duration = self._check_duration()
+                    self.summary_writer.add_scalar(
+                        "Training/Loss", train_loss, self.global_step
                     )
-                )
-            )
+                    self.summary_writer.add_scalar("Training/Time", duration, self.global_step)
+                    if self.args.use_per_step_metrics:
+                        self.summary_writer.add_scalar(
+                            f"Training/{self.model.metric_name()}",
+                            train_metric,
+                            self.global_step,
+                        )
+                    if self.lr_scheduler:
+                        self.summary_writer.add_scalar(
+                            "Training/LR", self.lr_scheduler.get_last_lr()[0], self.global_step
+                        )
 
-        if (
-            self.eval_dataset_for_training is not None
-            and self.args.eval_during_train_by_steps > 0
-            and self.step % self.args.eval_during_train_by_steps == 0
-        ):
-            model.eval()
-            eval_metric, eval_loss = self._evaluate(model)
-            if self.args.use_per_step_metrics:
-                self.summary_writer.add_scalar(
-                    f"Validation/{self.model.metric_name()}",
-                    eval_metric,
-                    self.global_step,
-                )
-                self.summary_writer.add_scalar(
-                    "Validation/Loss", eval_loss, self.global_step
-                )
-            self.logger.info(
-                self._wrap_log(
-                    f"epoch: {epoch}; step: {self.step:05d};"
-                    + (
-                        f" Validation/{self.model.metric_name()}: {eval_metric:.4f}, Validation/Loss: {eval_loss:.4f}"
-                        if self.args.use_per_step_metrics
-                        else ""
+                    self.logger.info(
+                        self._wrap_log(
+                            f"epoch: {epoch}; step: {self.step:05d}; loss: {train_loss:.4f};"
+                            + (
+                                f" {self.model.metric_name()}: {train_metric:.4f}; time: {duration:.4f}s"
+                                if self.args.use_per_step_metrics
+                                else f" time: {duration:.4f}s"
+                            )
+                        )
                     )
-                )
-            )
-            model.train()
 
-    def _train_one_step_internal(self, model: Module, data: Dict):
-        loss, pred, label = model(data)
-        loss.backward()
-        if self.args.clip_grad:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.grad_max_norm)
-        self.optimizer.step()
-        return loss, pred, label
+                if (
+                    self.eval_dataset_for_training is not None
+                    and self.args.eval_during_train_by_steps > 0
+                    and self.step % self.args.eval_during_train_by_steps == 0
+                ):
+                    model.eval()
+                    eval_metric, eval_loss = self._evaluate(model)
+                    if self.args.use_per_step_metrics:
+                        self.summary_writer.add_scalar(
+                            f"Validation/{self.model.metric_name()}",
+                            eval_metric,
+                            self.global_step,
+                        )
+                        self.summary_writer.add_scalar(
+                            "Validation/Loss", eval_loss, self.global_step
+                        )
+                    self.logger.info(
+                        self._wrap_log(
+                            f"epoch: {epoch}; step: {self.step:05d};"
+                            + (
+                                f" Validation/{self.model.metric_name()}: {eval_metric:.4f}, Validation/Loss: {eval_loss:.4f}"
+                                if self.args.use_per_step_metrics
+                                else ""
+                            )
+                        )
+                    )
+                    model.train()
+
+                if self._should_stop():
+                    break
+
+            # Epoch finishes.
+            self.step = 0
+            if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
+                self._save_checkpoint(epoch + 1)
 
     def _evaluate(self, model: Module):
         if self.args.mode != TrainMode.TRAIN:
@@ -389,7 +381,33 @@ class DeepGNNTrainer:
         assert dataset is not None
         with torch.no_grad():
             for data in dataset:
-                pred, label, loss = self._evaluate_one_step(model, data)
+                is_eval_during_training = self.args.mode == TrainMode.TRAIN
+                if not is_eval_during_training:
+                    self._increment_step()
+                self._prepare_data(data)
+
+                loss, pred, label = model(data)
+
+                if (
+                    not is_eval_during_training
+                    and self.args.log_by_steps > 0
+                    and self.step % self.args.log_by_steps == 0
+                ):
+                    duration = self._check_duration()
+                    loss_val = loss.data.item()
+                    self.summary_writer.add_scalar(
+                        "Evaluation/Loss", loss_val, self.global_step
+                    )
+                    self.summary_writer.add_scalar(
+                        "Evaluation/Time", duration, self.global_step
+                    )
+                    self.logger.info(
+                        self._wrap_log(
+                            f"step: {self.step:05d}; loss: {loss_val:.4f}; time: {duration:.4f}s"
+                        )
+                    )
+
+
                 data_size += pred.size(0)
                 eval_losses.append(loss.data.item())
 
@@ -417,38 +435,6 @@ class DeepGNNTrainer:
         eval_loss = torch.tensor(eval_loss)
         return eval_metric, eval_loss
 
-    def _evaluate_one_step(self, model: Module, data: Dict):
-        is_eval_during_training = self.args.mode == TrainMode.TRAIN
-        if not is_eval_during_training:
-            self._increment_step()
-        self._prepare_data(data)
-
-        loss, pred, label = self._evaluate_one_step_internal(model, data)
-
-        if (
-            not is_eval_during_training
-            and self.args.log_by_steps > 0
-            and self.step % self.args.log_by_steps == 0
-        ):
-            duration = self._check_duration()
-            loss_val = loss.data.item()
-            self.summary_writer.add_scalar(
-                "Evaluation/Loss", loss_val, self.global_step
-            )
-            self.summary_writer.add_scalar(
-                "Evaluation/Time", duration, self.global_step
-            )
-            self.logger.info(
-                self._wrap_log(
-                    f"step: {self.step:05d}; loss: {loss_val:.4f}; time: {duration:.4f}s"
-                )
-            )
-
-        return pred, label, loss
-
-    def _evaluate_one_step_internal(self, model: Module, data: Dict):
-        return model(data)
-
     def _inference(self, model: Module):
         self._init_summary_writer(prefix="inference/worker")
         model.eval()
@@ -456,26 +442,20 @@ class DeepGNNTrainer:
         with self._get_embedding_writer() as fp:
             with torch.no_grad():
                 for data in self.dataset:
-                    self._inference_one_step(model, data, fp)
+                    self._increment_step()
+                    self._prepare_data(data)
+
+                    embedding = self.model.get_embedding(data)
+                    self.model.output_embedding(fp, data, embedding)
+
+                    if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
+                        duration = self._check_duration()
+                        self.summary_writer.add_scalar("Inference/Time", duration, self.global_step)
+                        self.logger.info(
+                            self._wrap_log(f"step: {self.step:05d}; time: {duration:.4f}s")
+                        )
                     if self._should_stop():
                         break
-
-    def _inference_one_step(self, model: Module, data: Dict, fp: Any):
-        self._increment_step()
-        self._prepare_data(data)
-
-        embedding = self._inference_one_step_internal(model, data)
-        self.model.output_embedding(fp, data, embedding)
-
-        if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
-            duration = self._check_duration()
-            self.summary_writer.add_scalar("Inference/Time", duration, self.global_step)
-            self.logger.info(
-                self._wrap_log(f"step: {self.step:05d}; time: {duration:.4f}s")
-            )
-
-    def _inference_one_step_internal(self, model: Module, data: Dict):
-        return self.model.get_embedding(data)
 
     def _increment_step(self):
         self.step += 1

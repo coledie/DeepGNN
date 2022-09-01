@@ -139,6 +139,11 @@ def _train_loop(
             del init_ckpt
 
     local_rank = 0
+    steps_in_epoch_trained = 0
+    rank = 0
+    world_size = 1
+    max_steps = -1
+
 
     init_model_fn = config["init_model_fn"]
     init_dataset_fn = config["init_dataset_fn"]
@@ -153,15 +158,9 @@ def _train_loop(
     model = train.torch.prepare_model(model)
     model.train()
 
-    ## INIT MODEL
-    model_name = type(model).__name__
-
     if args.gpu:
         torch.cuda.set_device(local_rank)
         model.cuda()
-    rank = 0
-    world_size = 1
-    prefix = ""
 
     if rank == 0:
         if (
@@ -175,21 +174,19 @@ def _train_loop(
     _load_checkpoint()
 
     backend = create_backend(
-        BackendOptions(args), is_leader=(0 == 0)
-    )  # TODO is_leader
+        BackendOptions(args), is_leader=(rank == 0)
+    )
 
     dataset = init_dataset_fn(
         args=args,
         model=model,
-        rank=0,#trainer.rank,
-        world_size=1,#trainer.world_size,
+        rank=rank,
+        world_size=world_size,
         backend=backend,
     )
-    start_time = time.time()
-    max_steps = -1
 
     optimizer = (
-        init_optimizer_fn(args=args, model=model, world_size=1)#trainer.world_size)
+        init_optimizer_fn(args=args, model=model, world_size=world_size)
         if init_optimizer_fn is not None
         else None
     )
@@ -207,41 +204,45 @@ def _train_loop(
         else args.data_parallel_num
     )
 
-    # TODO torch trainer _initialiez
+    logger=get_logger()
+
+
+    model_name = type(model).__name__
+
+    max_steps = (
+        args.max_samples // (world_size * args.batch_size)
+        if args.max_samples > 0
+        else -1
+    )
+    logger.info(_wrap_log(f"Max steps per epoch:{max_steps}"))
+
+    # On-demand enable telemetry.
+    log_telemetry(
+        logger,
+        f"Training worker started. Model: {model_name}.",
+        LOG_PROPS_EVENT_START_WORKER,
+        f"{args.mode}",
+        model_name,
+        args.user_name,
+        args.job_id,
+        rank,
+        world_size,
+        LOG_PROPS_PLATFORM_PYTORCH,
+    )
+
+    result = None
+
     epochs_trained = 0
-    # Executed distributed training/evalution/inference.
     with closing(backend):
-        """
-        trainer.run(
-            model,
-            ,
-            optimizer,
-            eval_dataloader_for_training,
-        )
-        """
-        '''
-        d = torch.utils.data.DataLoader(
-            dataset=dataset,
-            num_workers=num_workers,
-            prefetch_factor=args.prefetch_factor,
-        )
-        for epoch in range(0, args.num_epochs):
-            for i, data in enumerate(d):
-                loss, pred, label = model(data)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                print(f"epoch: {epoch}, iter: {i}, loss: {loss.item()}")
-        '''
+        start_time = time.time()
         summary_writer = SummaryWriter(
-            os.path.join(args.metric_dir, f"{prefix}-{rank}")
+            os.path.join(args.metric_dir, f"train/worker-{rank}")
         )
         model.train()
         lr_scheduler = None
-        logger=get_logger()
 
         # Continous training from epoch and step saved in checkpoint.
-        step = 0#steps_in_epoch_trained
+        step = steps_in_epoch_trained
         global_step = step
         for epoch in range(epochs_trained, args.num_epochs):
             dataloader = torch.utils.data.DataLoader(
@@ -326,8 +327,8 @@ def _train_loop(
                 '''
                 if (
                     eval_dataset_for_training is not None
-                    and args.eval_during_train_by_steps > 0
-                    and step % args.eval_during_train_by_steps == 0
+                    and eval_during_train_by_steps > 0
+                    and step % eval_during_train_by_steps == 0
                 ):
                     model.eval()
                     eval_metric, eval_loss = _evaluate(model)
@@ -361,6 +362,28 @@ def _train_loop(
             step = 0
             if rank == 0 and epoch % args.save_ckpt_by_epochs == 0:
                 _save_checkpoint(epoch + 1)
+
+
+
+
+
+        log_telemetry(
+            logger,
+            f"Training worker finished. Model: {model_name}.",
+            LOG_PROPS_EVENT_END_WORKER,
+            f"{args.mode}",
+            model_name,
+            args.user_name,
+            args.job_id,
+            rank,
+            world_size,
+            LOG_PROPS_PLATFORM_PYTORCH,
+        )
+
+        if args.gpu:
+            logger.info(_wrap_log(dump_gpu_memory()))
+
+        return result
 
 
 
@@ -414,24 +437,3 @@ def run_dist(
         ray.shutdown()
         raise e
     ray.shutdown()
-
-
-if __name__ == "__main__":
-    num_samples = 20
-    input_size = 10
-    layer_size = 15
-    output_size = 5
-
-    # In this example we use a randomly generated dataset.
-    input = torch.randn(num_samples, input_size)
-    labels = torch.randn(num_samples, output_size)
-
-    # For GPU Training, set `use_gpu` to True.
-    use_gpu = False
-
-    trainer = TorchTrainer(
-        train_func_distributed,
-        scaling_config=ScalingConfig(num_workers=4, use_gpu=use_gpu),
-    )
-
-    results = trainer.fit()

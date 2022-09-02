@@ -574,12 +574,17 @@ def test_unsupervised_graphsage_with_feature_encoder(
     avg_mrr = sum(mrr_values) / len(mrr_values)
     assert avg_mrr > 0.5
 """
+
+
 def setup_module(module):
     lib_name = "libwrapper.so"
     if platform.system() == "Windows":
         lib_name = "wrapper.dll"
 
-    os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join("/home/user/DeepGNN/bazel-bin/src/cc/lib", lib_name)
+    os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join(
+        "/home/user/DeepGNN/bazel-bin/src/cc/lib", lib_name
+    )
+
 
 def test_graphsage_trainer():
     torch.manual_seed(0)
@@ -604,12 +609,13 @@ def test_graphsage_trainer():
 
     from main import init_args, create_model, create_dataset, create_optimizer
     from deepgnn.trainer.factory import run_dist
+
     run_dist(
         init_model_fn=create_model,
         init_dataset_fn=create_dataset,
         init_optimizer_fn=create_optimizer,
         init_args_fn=init_args,
-        run_args=run_args
+        run_args=run_args,
     )
 
 

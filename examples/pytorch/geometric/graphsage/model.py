@@ -15,6 +15,7 @@ from deepgnn.pytorch.common import BaseMetric, MRR
 from deepgnn.pytorch.modeling import BaseSupervisedModel
 from deepgnn.pytorch.encoding import FeatureEncoder
 from deepgnn import get_logger
+
 logger = get_logger()
 
 
@@ -71,40 +72,37 @@ class PTGSupervisedGraphSage(BaseSupervisedModel):
 
     def query(self, graph: Graph, inputs: np.ndarray):
         """Query graph for training data."""
-        print(inputs, self.label_idx, self.label_dim)
         logger.info(f"INPUTS: {inputs} {self.label_idx} {self.label_dim}")
-        assert False, inputs
 
-        try:
-            context = {"inputs": inputs}
-            context["label"] = graph.node_features(
-                context["inputs"],
-                np.array([[self.label_idx, self.label_dim]]),
-                FeatureType.FLOAT,
-            )
+        context = {"inputs": inputs}
+        context["label"] = graph.node_features(
+            context["inputs"],
+            np.array([[self.label_idx, self.label_dim]]),
+            FeatureType.FLOAT,
+        )
 
-            n2_out = context["inputs"]  # Output nodes of 2nd (final) layer of convolution
-            # input nodes of 2nd layer of convolution (besides the output nodes themselves)
-            n2_in = graph.sample_neighbors(n2_out, self.edge_type, self.fanouts[1])[
-                0
-            ].flatten()
-            #  output nodes of first layer of convolution (all nodes that affect output of 2nd layer)
-            n1_out = np.concatenate([n2_out, n2_in])
-            # input nodes to 1st layer of convolution (besides the output)
-            n1_in = graph.sample_neighbors(n1_out, self.edge_type, self.fanouts[0])[
-                0
-            ].flatten()
-            # Nodes for which we need features (layer 0)
-            n0_out = np.concatenate([n1_out, n1_in])
-            x0 = graph.node_features(
-                n0_out, np.array([[self.feature_idx, self.feature_dim]]), self.feature_type
-            )
+        n2_out = context["inputs"]  # Output nodes of 2nd (final) layer of convolution
+        # input nodes of 2nd layer of convolution (besides the output nodes themselves)
+        n2_in = graph.sample_neighbors(n2_out, self.edge_type, self.fanouts[1])[
+            0
+        ].flatten()
+        #  output nodes of first layer of convolution (all nodes that affect output of 2nd layer)
+        n1_out = np.concatenate([n2_out, n2_in])
+        # input nodes to 1st layer of convolution (besides the output)
+        n1_in = graph.sample_neighbors(n1_out, self.edge_type, self.fanouts[0])[
+            0
+        ].flatten()
+        # Nodes for which we need features (layer 0)
+        n0_out = np.concatenate([n1_out, n1_in])
+        x0 = graph.node_features(
+            n0_out,
+            np.array([[self.feature_idx, self.feature_dim]]),
+            self.feature_type,
+        )
 
-            context["x0"] = x0
-            context["out_1"] = n1_out.shape[0]  # Number of output nodes of layer 1
-            context["out_2"] = n2_out.shape[0]  # Number of output nodes of layer 2
-        except Exception as e:
-            assert False, inputs
+        context["x0"] = x0
+        context["out_1"] = n1_out.shape[0]  # Number of output nodes of layer 1
+        context["out_2"] = n2_out.shape[0]  # Number of output nodes of layer 2
         return context
 
     def get_score(self, context: dict):

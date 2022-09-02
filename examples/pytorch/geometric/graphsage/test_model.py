@@ -217,7 +217,6 @@ def test_supervised_graphsage_loss_value(mock_graph):  # noqa: F811
 """
 
 
-
 if __name__ == "__main__":
     sys.exit(
         pytest.main(

@@ -1,12 +1,9 @@
-"""
-New trainer base.
-"""
+"""New trainer base."""
 
 import os
 import argparse
-from typing import Optional, Callable, List
 import time
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict, Callable, List
 
 import numpy as np
 import torch
@@ -35,7 +32,6 @@ from deepgnn.pytorch.common.utils import (
     to_cuda,
 )
 from deepgnn import (
-    get_logger,
     log_telemetry,
     TrainMode,
     LOG_PROPS_EVENT_START_WORKER,
@@ -62,7 +58,11 @@ def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = 
     if init_arg_fn is not None:
         init_arg_fn(parser)
 
-    args = parser.parse_known_args()[0] if run_args is None else parser.parse_args(run_args)
+    args = (
+        parser.parse_known_args()[0]
+        if run_args is None
+        else parser.parse_args(run_args)
+    )
     for arg in dir(args):
         if not arg.startswith("_"):
             get_logger().info(f"{arg}={getattr(args, arg)}")
@@ -97,9 +97,7 @@ class DeepGNNTrainingLoop:
 
         self.config = config
 
-    def run(
-        self, config
-    ):
+    def run(self, config):
         """
         Perform training/evaluation/inference according to training mode set in constructor.
 
@@ -115,10 +113,14 @@ class DeepGNNTrainingLoop:
         init_optimizer_fn = self.config["init_optimizer_fn"]
         init_args_fn = self.config["init_args_fn"]
         run_args = self.config["run_args"]
-        init_eval_dataset_for_training_fn = self.config["init_eval_dataset_for_training_fn"]
+        init_eval_dataset_for_training_fn = self.config[
+            "init_eval_dataset_for_training_fn"
+        ]
 
         self.args = get_args(init_args_fn, run_args)
-        self.backend = create_backend(BackendOptions(self.args), is_leader=(self.rank == 0))
+        self.backend = create_backend(
+            BackendOptions(self.args), is_leader=(self.rank == 0)
+        )
 
         self.model = init_model_fn(self.args)
         self.model = train.torch.prepare_model(self.model)
@@ -135,10 +137,10 @@ class DeepGNNTrainingLoop:
             else self.args.data_parallel_num
         )
         self.dataset = torch.utils.data.DataLoader(
-                dataset=self.dataset,
-                num_workers=self.num_workers,
-                prefetch_factor=self.args.prefetch_factor,
-            )
+            dataset=self.dataset,
+            num_workers=self.num_workers,
+            prefetch_factor=self.args.prefetch_factor,
+        )
 
         self.eval_dataset_for_training = None
         self.eval_dataloader_for_training = None
@@ -157,17 +159,17 @@ class DeepGNNTrainingLoop:
                     prefetch_factor=self.args.prefetch_factor,
                 )
         self.optimizer = (
-            init_optimizer_fn(args=self.args, model=self.model, world_size=self.world_size)
+            init_optimizer_fn(
+                args=self.args, model=self.model, world_size=self.world_size
+            )
             if init_optimizer_fn is not None
             else None
         )
 
         self._init_max_steps()
-        model = self._initialize(self.model, self.dataset, self.optimizer, self.eval_dataset_for_training)
-    
-        dataset = self.dataset
-        optimizer = self.optimizer
-        eval_dataset_for_training = self.eval_dataset_for_training
+        model = self._initialize(
+            self.model, self.dataset, self.optimizer, self.eval_dataset_for_training
+        )
 
         # On-demand enable telemetry.
         log_telemetry(
@@ -272,7 +274,9 @@ class DeepGNNTrainingLoop:
                 # TODO loss caluclation here
                 loss.backward()
                 if self.args.clip_grad:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.grad_max_norm)
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), self.args.grad_max_norm
+                    )
                 self.optimizer.step()
                 self.train_losses.append(loss.data.item())
 
@@ -294,7 +298,10 @@ class DeepGNNTrainingLoop:
                 )
                 self.train_metrics.append(metric)
 
-                if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
+                if (
+                    self.args.log_by_steps > 0
+                    and self.step % self.args.log_by_steps == 0
+                ):
                     train_loss = np.mean(self.train_losses)
                     train_metric = np.mean(self.train_metrics)
                     self.train_losses = []
@@ -303,7 +310,9 @@ class DeepGNNTrainingLoop:
                     self.summary_writer.add_scalar(
                         "Training/Loss", train_loss, self.global_step
                     )
-                    self.summary_writer.add_scalar("Training/Time", duration, self.global_step)
+                    self.summary_writer.add_scalar(
+                        "Training/Time", duration, self.global_step
+                    )
                     if self.args.use_per_step_metrics:
                         self.summary_writer.add_scalar(
                             f"Training/{self.model.metric_name()}",
@@ -312,7 +321,9 @@ class DeepGNNTrainingLoop:
                         )
                     if self.lr_scheduler:
                         self.summary_writer.add_scalar(
-                            "Training/LR", self.lr_scheduler.get_last_lr()[0], self.global_step
+                            "Training/LR",
+                            self.lr_scheduler.get_last_lr()[0],
+                            self.global_step,
                         )
 
                     self.logger.info(
@@ -406,7 +417,6 @@ class DeepGNNTrainingLoop:
                         )
                     )
 
-
                 data_size += pred.size(0)
                 eval_losses.append(loss.data.item())
 
@@ -447,11 +457,18 @@ class DeepGNNTrainingLoop:
                     embedding = self.model.get_embedding(data)
                     self.model.output_embedding(fp, data, embedding)
 
-                    if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
+                    if (
+                        self.args.log_by_steps > 0
+                        and self.step % self.args.log_by_steps == 0
+                    ):
                         duration = self._check_duration()
-                        self.summary_writer.add_scalar("Inference/Time", duration, self.global_step)
+                        self.summary_writer.add_scalar(
+                            "Inference/Time", duration, self.global_step
+                        )
                         self.logger.info(
-                            self._wrap_log(f"step: {self.step:05d}; time: {duration:.4f}s")
+                            self._wrap_log(
+                                f"step: {self.step:05d}; time: {duration:.4f}s"
+                            )
                         )
                     if self._should_stop():
                         break
@@ -565,26 +582,33 @@ def run_dist(
     run_args: Optional[List] = None,
     init_eval_dataset_for_training_fn: Optional[Callable] = None,
 ):
+    """Public api."""
     import ray
-    ray.init(num_cpus=2, num_gpus=0)  # TODO how to set how many cpus each trainer is allocated
+
+    ray.init(
+        num_cpus=2, num_gpus=0
+    )  # TODO how to set how many cpus each trainer is allocated
     config = {
-                "init_model_fn": init_model_fn,
-                "init_dataset_fn": init_dataset_fn,
-                "init_optimizer_fn": init_optimizer_fn,
-                "init_args_fn": init_args_fn,
-                "run_args": run_args,
-                "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
-            }
+        "init_model_fn": init_model_fn,
+        "init_dataset_fn": init_dataset_fn,
+        "init_optimizer_fn": init_optimizer_fn,
+        "init_args_fn": init_args_fn,
+        "run_args": run_args,
+        "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
+    }
 
     # TODO multi worker, each training worker should be looking at different partition of whole dataset
     # TODO add trainer worker rank value
     # TODO DeepGNNTrainingLooop init - start server?
     try:
         training_loop = DeepGNNTrainingLoop(config)  # DeepGNNTrainingLoop
-        if False:
+        x = 1
+        if x == 0:
             trainer_class = TorchTrainer
-        elif True:
+        elif x == 1:
             trainer_class = HorovodTrainer
+        elif x == 2:
+            trainer_class = TensorflowTrainer
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,
@@ -595,3 +619,4 @@ def run_dist(
         ray.shutdown()
         raise e
     ray.shutdown()
+    return results

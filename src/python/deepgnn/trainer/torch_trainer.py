@@ -211,7 +211,7 @@ class Trainer:
             if self.args.use_per_step_metrics
             else torch.tensor(0.0)
         )
-        self.train_metrics.append(metric)
+        self.train_metrics.append(metric)  # TODO next PR, try to have ray track monitors/metrics
 
         if self.args.log_by_steps > 0 and self.step % self.args.log_by_steps == 0:
             train_loss = np.mean(self.train_losses)

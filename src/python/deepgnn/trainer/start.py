@@ -72,7 +72,7 @@ def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = 
     return args
 
 
-class DeepGNNTrainer:
+class DeepGNNTrainingLoop:
     """
     Pytorch trainer controls the workflow of training/evaluation/inference.
 
@@ -123,6 +123,7 @@ class DeepGNNTrainer:
         self.backend = create_backend(BackendOptions(self.args), is_leader=(self.rank == 0))
 
         self.model = init_model_fn(self.args)
+        self.model = train.torch.prepare_model(self.model)
         self.dataset = init_dataset_fn(
             args=self.args,
             model=self.model,
@@ -163,10 +164,9 @@ class DeepGNNTrainer:
             else None
         )
 
-
-
         self._init_max_steps()
         model = self._initialize(self.model, self.dataset, self.optimizer, self.eval_dataset_for_training)
+    
         dataset = self.dataset
         optimizer = self.optimizer
         eval_dataset_for_training = self.eval_dataset_for_training
@@ -271,6 +271,7 @@ class DeepGNNTrainer:
 
                 self.optimizer.zero_grad()
                 loss, pred, label = model(data)
+                # TODO loss caluclation here
                 loss.backward()
                 if self.args.clip_grad:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), self.args.grad_max_norm)
@@ -288,7 +289,7 @@ class DeepGNNTrainer:
                     self._save_checkpoint(epoch)
 
                 # Calculate training metrics for one batch data.
-                metric = (
+                metric = (  # move to model.get_metric(*args)
                     self.model.compute_metric([pred], [label]).data.item()
                     if self.args.use_per_step_metrics
                     else torch.tensor(0.0)
@@ -588,7 +589,7 @@ def run_dist(
 ):
     setup_module()
     import ray
-    ray.init(num_cpus=2, num_gpus=0)
+    ray.init(num_cpus=2, num_gpus=0)  # TODO how to set how many cpus each trainer is allocated
     config = {
                 "init_model_fn": init_model_fn,
                 "init_dataset_fn": init_dataset_fn,
@@ -597,14 +598,17 @@ def run_dist(
                 "run_args": run_args,
                 "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
             }
+
+    # TODO multi worker, each training worker should be looking at different partition of whole dataset
+    # TODO add trainer worker rank value
+    # TODO DeepGNNTrainingLooop init - start server?
     try:
-        base_trainer = DeepGNNTrainer(config)
+        training_loop = DeepGNNTrainingLoop(config)  # DeepGNNTrainingLoop
         trainer = TorchTrainer(
-            base_trainer.run,
+            training_loop.run,
             train_loop_config=config,
             scaling_config=ScalingConfig(num_workers=1, use_gpu=False),
         )
-
         results = trainer.fit()
     except Exception as e:
         ray.shutdown()

@@ -2,20 +2,16 @@
 New trainer base.
 """
 
+import os
 import argparse
-import torch
 from typing import Optional, Callable, List
-from contextlib import closing
 import time
 from typing import Any, Optional, Dict, List
 
-from torch.nn import Module
-from torch.optim import Optimizer
-
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+from torch.nn import Module
+from torch.optim import Optimizer
 from torch.utils.tensorboard import SummaryWriter
 from ray import train
 from ray.train.torch import TorchTrainer
@@ -48,10 +44,6 @@ from deepgnn import (
 )
 from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
 from deepgnn.graph_engine.adl_uploader import AdlDataWriter
-import deepgnn.graph_engine.snark._lib as lib
-
-import platform
-import os
 
 
 def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
@@ -565,22 +557,6 @@ class DeepGNNTrainingLoop:
         return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 
-def get_lib_name():
-    lib_name = "libwrapper.so"
-    if platform.system() == "Windows":
-        lib_name = "wrapper.dll"
-
-    _SNARK_LIB_PATH_ENV_KEY = "SNARK_LIB_PATH"
-    #if _SNARK_LIB_PATH_ENV_KEY in os.environ:
-    #    return os.environ[_SNARK_LIB_PATH_ENV_KEY]
-
-    os.environ[_SNARK_LIB_PATH_ENV_KEY] = os.path.join("/home/user/DeepGNN/bazel-bin/src/cc/lib", lib_name)
-    return os.environ[_SNARK_LIB_PATH_ENV_KEY]
-
-
-def setup_module():
-    lib._LIB_PATH = get_lib_name()
-
 def run_dist(
     init_model_fn: Callable,
     init_dataset_fn: Callable,
@@ -589,7 +565,6 @@ def run_dist(
     run_args: Optional[List] = None,
     init_eval_dataset_for_training_fn: Optional[Callable] = None,
 ):
-    setup_module()
     import ray
     ray.init(num_cpus=2, num_gpus=0)  # TODO how to set how many cpus each trainer is allocated
     config = {

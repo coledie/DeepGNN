@@ -37,6 +37,9 @@ import deepgnn.graph_engine.snark.convert as convert
 from deepgnn.graph_engine.snark.decoders import JsonDecoder
 from deepgnn.graph_engine.snark.converter.options import DataConverterType
 from model import SupervisedGraphSage, UnSupervisedGraphSage
+import deepgnn.graph_engine.snark._lib as lib
+import platform
+import os
 
 logger = get_logger()
 
@@ -571,6 +574,12 @@ def test_unsupervised_graphsage_with_feature_encoder(
     avg_mrr = sum(mrr_values) / len(mrr_values)
     assert avg_mrr > 0.5
 """
+def setup_module(module):
+    lib_name = "libwrapper.so"
+    if platform.system() == "Windows":
+        lib_name = "wrapper.dll"
+
+    os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join("/home/user/DeepGNN/bazel-bin/src/cc/lib", lib_name)
 
 def test_graphsage_trainer():
     torch.manual_seed(0)
@@ -584,18 +593,6 @@ def test_graphsage_trainer():
 
     model_path = tempfile.TemporaryDirectory()
     model_path_name = model_path.name + "/gnnmodel.pt"
-
-
-    import os
-    import platform
-    LIB_NAME = "libwrapper.so"
-    if platform.system() == "Windows":
-        LIB_NAME = "wrapper.dll"
-
-    #os.environ["SNARK_LIB_PATH"] = os.path.join(
-    #    "/home/user/DeepGNN/bazel-bin", "src", "cc", "lib", LIB_NAME
-    #)
-
 
     run_args = f"""--data_dir /tmp/cora --mode train --seed 123 \
 --backend snark --graph_type local --converter skip \

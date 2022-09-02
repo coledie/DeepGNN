@@ -19,6 +19,8 @@ import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from ray import train
 from ray.train.torch import TorchTrainer
+from ray.train.tensorflow import TensorflowTrainer
+from ray.train.horovod import HorovodTrainer
 from ray.air.config import ScalingConfig
 
 from deepgnn import get_logger
@@ -604,7 +606,11 @@ def run_dist(
     # TODO DeepGNNTrainingLooop init - start server?
     try:
         training_loop = DeepGNNTrainingLoop(config)  # DeepGNNTrainingLoop
-        trainer = TorchTrainer(
+        if False:
+            trainer_class = TorchTrainer
+        elif True:
+            trainer_class = HorovodTrainer
+        trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,
             scaling_config=ScalingConfig(num_workers=1, use_gpu=False),

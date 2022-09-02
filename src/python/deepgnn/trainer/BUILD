@@ -9,7 +9,7 @@ py_library(
     srcs = [
         "__init__.py",
         "args.py",
-        "start.py",
+        "factory.py",
     ],
     deps = [
         "//src/python/deepgnn/pytorch/modeling:deepgnn_pytorch_modeling",

@@ -11,7 +11,7 @@ from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset
 from deepgnn.pytorch.common.utils import get_feature_type, set_seed
 from deepgnn.pytorch.encoding import get_feature_encoder
 from deepgnn.pytorch.modeling import BaseModel
-from deepgnn.trainer.start import run_dist
+from deepgnn.trainer.factory import run_dist
 from deepgnn.graph_engine import (
     Graph,
     SamplingStrategy,

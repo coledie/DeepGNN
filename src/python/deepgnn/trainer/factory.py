@@ -48,6 +48,10 @@ from deepgnn import (
 )
 from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
 from deepgnn.graph_engine.adl_uploader import AdlDataWriter
+import deepgnn.graph_engine.snark._lib as lib
+
+import platform
+import os
 
 
 def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
@@ -561,10 +565,6 @@ class DeepGNNTrainingLoop:
         return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 
-import deepgnn.graph_engine.snark._lib as lib
-
-import platform
-import os
 def get_lib_name():
     lib_name = "libwrapper.so"
     if platform.system() == "Windows":

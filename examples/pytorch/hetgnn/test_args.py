@@ -11,7 +11,7 @@ from deepgnn import TrainMode, setup_default_logging_config
 from deepgnn import get_logger
 from deepgnn.pytorch.common.utils import get_feature_type, set_seed
 from deepgnn.pytorch.modeling import BaseModel
-from deepgnn.trainer.start import run_dist
+from deepgnn.trainer.factory import run_dist
 from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset
 from deepgnn.graph_engine import CSVNodeSampler, GraphEngineBackend
 from args import init_args

@@ -111,7 +111,7 @@ Our goal is to create a model capable of predicting whether an edge exists betwe
 	>>> from deepgnn.pytorch.common.utils import set_seed
 	>>> from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset
 	>>> from deepgnn.pytorch.modeling import BaseModel
-	>>> from deepgnn.trainer.start import run_dist
+	>>> from deepgnn.trainer.factory import run_dist
 	>>> from deepgnn.pytorch.common.metrics import F1Score
 
 Query is the interface between the model and graph database. It uses the graph engine API to perform graph functions like `node_features` and `sample_neighbors`, for a full reference on this interface see, `this guide <../graph_engine/overview>`_. Typically Query is initialized by the model as `self.q` so its functions may also be used ad-hoc by the model.

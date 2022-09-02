@@ -606,7 +606,7 @@ def test_graphsage_trainer():
 --log_by_steps 1 --use_per_step_metrics""".split()
 
     from main import init_args, create_model, create_dataset, create_optimizer
-    from deepgnn.trainer.start import run_dist
+    from deepgnn.trainer.factory import run_dist
     run_dist(
         init_model_fn=create_model,
         init_dataset_fn=create_dataset,

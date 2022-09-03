@@ -3,12 +3,12 @@
 import os
 import argparse
 import time
-from typing import Any, Optional, Dict, Callable, List
+from typing import Any, Optional, Dict, Callable, List, Tuple, IO
 
 import numpy as np
 import torch
-from torch.nn import Module
 from torch.optim import Optimizer
+from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.tensorboard import SummaryWriter
 from ray import train
 from ray.train.torch import TorchTrainer
@@ -22,6 +22,7 @@ from deepgnn.pytorch.common import init_common_args
 from deepgnn.trainer.args import init_trainer_args, init_fp16_args
 from deepgnn.graph_engine import create_backend, BackendOptions
 from deepgnn.graph_engine.samplers import GENodeSampler, GEEdgeSampler
+from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset
 from deepgnn.pytorch.common.consts import PREFIX_CHECKPOINT, PREFIX_EMBEDDING
 from deepgnn.pytorch.common.utils import (
     dump_gpu_memory,
@@ -52,7 +53,7 @@ class DeepGNNTrainingLoop:
     - For distributed training, please use DDPTrainer or HVDTrainer.
     """
 
-    def __init__(self, config):
+    def __init__(self, config: Dict[str, Any]):
         """Initialize trainer."""
         self.logger = get_logger()
         # Initialize rank, local_rank, world_size.
@@ -72,6 +73,14 @@ class DeepGNNTrainingLoop:
 
     def run(self, config):
         """
+    def run(
+        self,
+        model: BaseModel,
+        dataset: TorchDeepGNNDataset,
+        optimizer: Optional[Optimizer] = None,
+        eval_dataset_for_training: TorchDeepGNNDataset = None,
+    ) -> Optional[torch.Tensor]:
+
         Perform training/evaluation/inference according to training mode set in constructor.
 
         Args:
@@ -186,7 +195,7 @@ class DeepGNNTrainingLoop:
 
         return result
 
-    def _init_model(self, model: BaseModel):
+    def _init_model(self, model: BaseModel) -> BaseModel:
         self.model = model
         self.model_name = type(self.model).__name__
 
@@ -206,17 +215,18 @@ class DeepGNNTrainingLoop:
         self._load_checkpoint()
         return model
 
-    def _init_optimizer(self, optimizer: Optimizer):
+    def _init_optimizer(self, optimizer: Optimizer) -> Optimizer:
         self.lr_scheduler = self._create_lr_scheduler(optimizer)
         return optimizer
 
     def _initialize(
         self,
         model: BaseModel,
-        dataset: Any,
+        dataset: TorchDeepGNNDataset,
         optimizer: Optional[Optimizer] = None,
-        eval_dataset_for_training: Any = None,
-    ):
+        eval_dataset_for_training: TorchDeepGNNDataset = None,
+    ) -> BaseModel:
+
         model = self._init_model(model)
         self.dataset = dataset
         self.eval_dataset_for_training = eval_dataset_for_training
@@ -224,7 +234,7 @@ class DeepGNNTrainingLoop:
 
         return model
 
-    def _train(self, model: Module):
+    def _train(self, model: BaseModel):
         self._init_summary_writer(prefix="train/worker")
         model.train()
 
@@ -345,7 +355,7 @@ class DeepGNNTrainingLoop:
             if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
                 self._save_checkpoint(epoch + 1)
 
-    def _evaluate(self, model: Module):
+    def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.args.mode != TrainMode.TRAIN:
             self._init_summary_writer(prefix="evaluate/worker")
         model.eval()
@@ -416,7 +426,7 @@ class DeepGNNTrainingLoop:
         eval_loss = torch.tensor(eval_loss)
         return eval_metric, eval_loss
 
-    def _inference(self, model: Module):
+    def _inference(self, model: BaseModel):
         self._init_summary_writer(prefix="inference/worker")
         model.eval()
 
@@ -449,7 +459,7 @@ class DeepGNNTrainingLoop:
         self.step += 1
         self.global_step += 1
 
-    def _should_stop(self):
+    def _should_stop(self) -> bool:
         return self.max_steps > 0 and self.step >= self.max_steps
 
     def _init_summary_writer(self, prefix: str):
@@ -457,7 +467,7 @@ class DeepGNNTrainingLoop:
             os.path.join(self.args.metric_dir, f"{prefix}-{self.rank}")
         )
 
-    def _check_duration(self):
+    def _check_duration(self) -> float:
         duration = time.time() - self.start_time
         self.start_time = time.time()
         return duration
@@ -466,10 +476,10 @@ class DeepGNNTrainingLoop:
         if self.args.gpu:
             to_cuda(data)
 
-    def _wrap_log(self, content: str):
+    def _wrap_log(self, content: str) -> str:
         return f"[{self.world_size},{self.rank}] {content}"
 
-    def _create_lr_scheduler(self, optimizer: Optimizer):
+    def _create_lr_scheduler(self, optimizer: Optimizer) -> Optional[LambdaLR]:
         num_training_steps = self.max_steps * self.args.num_epochs
         return (
             get_linear_schedule_with_warmup(
@@ -529,7 +539,7 @@ class DeepGNNTrainingLoop:
         )
         self.logger.info(self._wrap_log(f"Max steps per epoch:{self.max_steps}"))
 
-    def _get_embedding_writer(self):
+    def _get_embedding_writer(self) -> IO[str]:
         embed_path = os.path.join(
             self.args.save_path, f"{PREFIX_EMBEDDING}-{self.rank}"
         )
@@ -542,7 +552,7 @@ class DeepGNNTrainingLoop:
                 file_path_prefix=embed_path,
             )
 
-            return uploader
+            return uploader  # type: ignore
         return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 

@@ -33,6 +33,7 @@ from deepgnn.pytorch.common.utils import (
 )
 from deepgnn import (
     log_telemetry,
+    TrainerType,
     TrainMode,
     LOG_PROPS_EVENT_START_WORKER,
     LOG_PROPS_PLATFORM_PYTORCH,
@@ -40,34 +41,6 @@ from deepgnn import (
 )
 from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
 from deepgnn.graph_engine.adl_uploader import AdlDataWriter
-
-
-def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(allow_abbrev=False)
-
-    # Initialize common parameters, including model, dataset, optimizer etc.
-    init_common_args(parser)
-
-    # Initialize trainer paramaters.
-    init_trainer_args(parser)
-
-    # Initialize fp16 related paramaters.
-    init_fp16_args(parser)
-
-    if init_arg_fn is not None:
-        init_arg_fn(parser)
-
-    args = (
-        parser.parse_known_args()[0]
-        if run_args is None
-        else parser.parse_args(run_args)
-    )
-    for arg in dir(args):
-        if not arg.startswith("_"):
-            get_logger().info(f"{arg}={getattr(args, arg)}")
-
-    return args
 
 
 class DeepGNNTrainingLoop:
@@ -112,12 +85,11 @@ class DeepGNNTrainingLoop:
         init_dataset_fn = self.config["init_dataset_fn"]
         init_optimizer_fn = self.config["init_optimizer_fn"]
         init_args_fn = self.config["init_args_fn"]
-        run_args = self.config["run_args"]
+        self.args = self.config["args"]
         init_eval_dataset_for_training_fn = self.config[
             "init_eval_dataset_for_training_fn"
         ]
 
-        self.args = get_args(init_args_fn, run_args)
         self.backend = create_backend(
             BackendOptions(self.args), is_leader=(self.rank == 0)
         )
@@ -574,6 +546,34 @@ class DeepGNNTrainingLoop:
         return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 
+def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+
+    # Initialize common parameters, including model, dataset, optimizer etc.
+    init_common_args(parser)
+
+    # Initialize trainer paramaters.
+    init_trainer_args(parser)
+
+    # Initialize fp16 related paramaters.
+    init_fp16_args(parser)
+
+    if init_arg_fn is not None:
+        init_arg_fn(parser)
+
+    args = (
+        parser.parse_known_args()[0]
+        if run_args is None
+        else parser.parse_args(run_args)
+    )
+    for arg in dir(args):
+        if not arg.startswith("_"):
+            get_logger().info(f"{arg}={getattr(args, arg)}")
+
+    return args
+
+
 def run_dist(
     init_model_fn: Callable,
     init_dataset_fn: Callable,
@@ -588,12 +588,14 @@ def run_dist(
     ray.init(
         num_cpus=2, num_gpus=0
     )  # TODO how to set how many cpus each trainer is allocated
+    args = get_args(init_args_fn, run_args)
+
     config = {
         "init_model_fn": init_model_fn,
         "init_dataset_fn": init_dataset_fn,
         "init_optimizer_fn": init_optimizer_fn,
         "init_args_fn": init_args_fn,
-        "run_args": run_args,
+        "args": args,
         "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
     }
 
@@ -602,13 +604,24 @@ def run_dist(
     # TODO DeepGNNTrainingLooop init - start server?
     try:
         training_loop = DeepGNNTrainingLoop(config)  # DeepGNNTrainingLoop
-        x = 1
-        if x == 0:
-            trainer_class = TorchTrainer
-        elif x == 1:
+        if args.trainer == TrainerType.BASE:
+            if tf:
+                trainer_class = TensorflowTrainer
+            else:
+                trainer_class = TorchTrainer
+        elif args.trainer == TrainerType.HVD:
             trainer_class = HorovodTrainer
-        elif x == 2:
-            trainer_class = TensorflowTrainer
+        elif args.trainer == TrainerType.DDP:
+            trainer_class = None
+        elif args.trainer == TrainerType.PS:
+            if not tf:
+                raise 
+            trainer_class = None
+        elif args.trainer == TrainerType.MULTINODE:
+            if not tf:
+                raise 
+            trainer_class = None
+
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,

@@ -42,6 +42,38 @@ from deepgnn import (
 )
 from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
 from deepgnn.graph_engine.adl_uploader import AdlDataWriter
+import argparse
+import os
+
+import horovod.torch as hvd
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import torch.utils.data.distributed
+from filelock import FileLock
+
+import ray
+from ray.air import session
+from ray.train.horovod import HorovodTrainer
+from ray.air.config import ScalingConfig
+
+class NN(nn.Module):
+    def __init__(self):
+        super(NN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
+        self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
+        self.conv2_drop = nn.Dropout2d()
+        self.fc1 = nn.Linear(320, 50)
+        self.fc2 = nn.Linear(50, 10)
+
+    def forward(self, x):
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))
+        x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
+        x = x.view(-1, 320)
+        x = F.relu(self.fc1(x))
+        x = F.dropout(x, training=self.training)
+        x = self.fc2(x)
+        return F.log_softmax(x)
 
 
 class DeepGNNTrainingLoop:
@@ -70,7 +102,139 @@ class DeepGNNTrainingLoop:
         self.max_steps = 0
 
         self.config = config
+    '''
+    def run(self, config):
+        def metric_average(val, name):
+            tensor = torch.tensor(val)
+            avg_tensor = hvd.allreduce(tensor, name=name)
+            return avg_tensor.item()
 
+
+        class Net(nn.Module):
+            def __init__(self):
+                super(Net, self).__init__()
+                self.conv1 = nn.Conv2d(1, 10, kernel_size=5)
+                self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
+                self.conv2_drop = nn.Dropout2d()
+                self.fc1 = nn.Linear(320, 50)
+                self.fc2 = nn.Linear(50, 10)
+
+            def forward(self, x):
+                x = F.relu(F.max_pool2d(self.conv1(x), 2))
+                x = F.relu(F.max_pool2d(self.conv2_drop(self.conv2(x)), 2))
+                x = x.view(-1, 320)
+                x = F.relu(self.fc1(x))
+                x = F.dropout(x, training=self.training)
+                x = self.fc2(x)
+                return F.log_softmax(x)
+
+
+        def setup(config):
+            data_dir = config.get("data_dir", None)
+            seed = config.get("seed", 42)
+            batch_size = config.get("batch_size", 64)
+            use_adasum = config.get("use_adasum", False)
+            lr = config.get("lr", 0.01)
+            momentum = config.get("momentum", 0.5)
+            use_cuda = config.get("use_cuda", False)
+
+            # Horovod: initialize library.
+            hvd.init()
+            torch.manual_seed(seed)
+
+            if use_cuda:
+                # Horovod: pin GPU to local rank.
+                torch.cuda.set_device(hvd.local_rank())
+                torch.cuda.manual_seed(seed)
+
+            # Horovod: limit # of CPU threads to be used per worker.
+            torch.set_num_threads(1)
+            kwargs = {"num_workers": 1, "pin_memory": True} if use_cuda else {}
+            data_dir = data_dir or "~/data"
+            with FileLock("/home/user/.horovod_lock"):
+                train_dataset = datasets.MNIST(
+                    data_dir,
+                    train=True,
+                    download=True,
+                    transform=transforms.Compose(
+                        [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+                    ),
+                )
+            # Horovod: use DistributedSampler to partition the training data.
+            train_sampler = torch.utils.data.distributed.DistributedSampler(
+                train_dataset, num_replicas=hvd.size(), rank=hvd.rank()
+            )
+            train_loader = torch.utils.data.DataLoader(
+                train_dataset, batch_size=batch_size, sampler=train_sampler, **kwargs
+            )
+
+            model = Net()
+
+            # By default, Adasum doesn't need scaling up learning rate.
+            lr_scaler = hvd.size() if not use_adasum else 1
+
+            if use_cuda:
+                # Move model to GPU.
+                model.cuda()
+                # If using GPU Adasum allreduce, scale learning rate by local_size.
+                if use_adasum and hvd.nccl_built():
+                    lr_scaler = hvd.local_size()
+
+            # Horovod: scale learning rate by lr_scaler.
+            optimizer = optim.SGD(model.parameters(), lr=lr * lr_scaler, momentum=momentum)
+
+            # Horovod: wrap optimizer with DistributedOptimizer.
+            optimizer = hvd.DistributedOptimizer(
+                optimizer,
+                named_parameters=model.named_parameters(),
+                op=hvd.Adasum if use_adasum else hvd.Average,
+            )
+
+            return model, optimizer, train_loader, train_sampler
+
+
+        def train_epoch(
+            model, optimizer, train_sampler, train_loader, epoch, log_interval, use_cuda
+        ):
+            loss = None
+            model.train()
+            # Horovod: set epoch to sampler for shuffling.
+            train_sampler.set_epoch(epoch)
+            for batch_idx, (data, target) in enumerate(train_loader):
+                if use_cuda:
+                    data, target = data.cuda(), target.cuda()
+                optimizer.zero_grad()
+                output = model(data)
+                loss = F.nll_loss(output, target)
+                loss.backward()
+                optimizer.step()
+                if batch_idx % log_interval == 0:
+                    # Horovod: use train_sampler to determine the number of
+                    # examples in this worker's partition.
+                    print(
+                        "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                            epoch,
+                            batch_idx * len(data),
+                            len(train_sampler),
+                            100.0 * batch_idx / len(train_loader),
+                            loss.item(),
+                        )
+                    )
+            return loss.item() if loss else None
+
+
+        num_epochs = config.get("num_epochs", 10)
+        log_interval = config.get("log_interval", 10)
+        use_cuda = config.get("use_cuda", False)
+
+        model, optimizer, train_loader, train_sampler = setup(config)
+
+        for epoch in range():
+            loss = train_epoch(
+                model, optimizer, train_sampler, train_loader, epoch, log_interval, use_cuda
+            )
+            session.report(dict(loss=loss))
+        '''
     def run(self, config):
         """
     def run(
@@ -80,7 +244,6 @@ class DeepGNNTrainingLoop:
         optimizer: Optional[Optimizer] = None,
         eval_dataset_for_training: TorchDeepGNNDataset = None,
     ) -> Optional[torch.Tensor]:
-
         Perform training/evaluation/inference according to training mode set in constructor.
 
         Args:
@@ -90,6 +253,29 @@ class DeepGNNTrainingLoop:
             eval_during_train_dataset: optional dataset for evaluation
                 during training.
         """
+        hvd.init()
+        #torch.manual_seed(seed)
+        torch.set_num_threads(1)  # Horovod: limit # of CPU threads to be used per worker.
+
+        """
+        if self.use_cuda:
+            torch.cuda.set_device(hvd.local_rank())
+        """
+
+        """
+        kwargs = {"num_workers": 1, "pin_memory": True} if use_cuda else {}
+        data_dir = data_dir or "~/data"
+        with FileLock(os.path.expanduser("~/.horovod_lock")):
+            train_dataset = datasets.MNIST(
+                data_dir,
+                train=True,
+                download=True,
+                transform=transforms.Compose(
+                    [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
+                ),
+            )
+        """
+
         init_model_fn = self.config["init_model_fn"]
         init_dataset_fn = self.config["init_dataset_fn"]
         init_optimizer_fn = self.config["init_optimizer_fn"]
@@ -104,7 +290,8 @@ class DeepGNNTrainingLoop:
         )
 
         self.model = init_model_fn(self.args)
-        self.model = train.torch.prepare_model(self.model)
+
+        # TODO don't do for hvd?? self.model = train.torch.prepare_model(self.model)
         self.dataset = init_dataset_fn(
             args=self.args,
             model=self.model,
@@ -117,11 +304,34 @@ class DeepGNNTrainingLoop:
             if issubclass(self.dataset.sampler_class, (GENodeSampler, GEEdgeSampler))
             else self.args.data_parallel_num
         )
-        self.dataset = torch.utils.data.DataLoader(
-            dataset=self.dataset,
-            num_workers=self.num_workers,
-            prefetch_factor=self.args.prefetch_factor,
+        """
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            train_dataset, num_replicas=hvd.size(), rank=hvd.rank()
         )
+        train_loader = torch.utils.data.DataLoader(
+            train_dataset, batch_size=batch_size, sampler=train_sampler, **kwargs
+        )
+        """
+        if True:
+            self.dataset = torch.utils.data.DataLoader(
+                dataset=self.dataset,
+                num_workers=self.num_workers,
+                prefetch_factor=self.args.prefetch_factor,
+            )
+        else:
+            #self.dataset.init_sampler()
+            #print(self.dataset.__dict__)
+            #self.dataset.sampler = self.dataset.sampler_class()
+            #len(self.dataset)
+            self.sampler = torch.utils.data.distributed.DistributedSampler(
+                self.dataset, num_replicas=hvd.size(), rank=hvd.rank()
+            )
+            self.dataset = torch.utils.data.DataLoader(
+                dataset=self.dataset,
+                num_workers=self.num_workers,
+                prefetch_factor=self.args.prefetch_factor,
+                sampler=self.sampler,
+            )
 
         self.eval_dataset_for_training = None
         self.eval_dataloader_for_training = None
@@ -146,6 +356,14 @@ class DeepGNNTrainingLoop:
             if init_optimizer_fn is not None
             else None
         )
+
+        # IF HOROVOD
+        self.optimizer = hvd.DistributedOptimizer(
+            self.optimizer,
+            named_parameters=self.model.named_parameters(),
+            op=hvd.Average,  # hvd.Adasum if use_adasum else hvd.Average
+        )
+
 
         self._init_max_steps()
         model = self._initialize(
@@ -228,7 +446,8 @@ class DeepGNNTrainingLoop:
     ) -> BaseModel:
 
         model = self._init_model(model)
-        self.dataset = dataset
+        #self.dataset = dataset
+
         self.eval_dataset_for_training = eval_dataset_for_training
         self.optimizer = self._init_optimizer(optimizer) if optimizer else optimizer
 
@@ -241,6 +460,8 @@ class DeepGNNTrainingLoop:
         # Continous training from epoch and step saved in checkpoint.
         self.step = self.steps_in_epoch_trained
         for epoch in range(self.epochs_trained, self.args.num_epochs):
+            if hasattr(self, "sampler"):
+                self.sampler.set_epoch(epoch)
             for i, data in enumerate(self.dataset):
                 # Skip trained steps.
                 if i < self.step:
@@ -354,6 +575,20 @@ class DeepGNNTrainingLoop:
             self.step = 0
             if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
                 self._save_checkpoint(epoch + 1)
+        session.report(dict(loss=loss))
+        """
+        # Horovod: use train_sampler to determine the number of
+        # examples in this worker's partition.
+        print(
+            "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
+                epoch,
+                batch_idx * len(data),
+                len(train_sampler),
+                100.0 * batch_idx / len(train_loader),
+                loss.item(),
+            )
+        )
+        """
 
     def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.args.mode != TrainMode.TRAIN:
@@ -556,6 +791,14 @@ class DeepGNNTrainingLoop:
         return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 
+"""
+def metric_average(val, name):
+    tensor = torch.tensor(val)
+    avg_tensor = hvd.allreduce(tensor, name=name)
+    return avg_tensor.item()
+"""
+
+
 def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -596,7 +839,7 @@ def run_dist(
     import ray
 
     ray.init(
-        num_cpus=2, num_gpus=0
+        num_cpus=4, num_gpus=0  # Need 2x num_workers
     )  # TODO how to set how many cpus each trainer is allocated
     args = get_args(init_args_fn, run_args)
 
@@ -615,7 +858,7 @@ def run_dist(
     try:
         training_loop = DeepGNNTrainingLoop(config)  # DeepGNNTrainingLoop
         if args.trainer == TrainerType.BASE:
-            if tf:
+            if False:# TODO tf:
                 trainer_class = TensorflowTrainer
             else:
                 trainer_class = TorchTrainer
@@ -635,7 +878,7 @@ def run_dist(
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,
-            scaling_config=ScalingConfig(num_workers=1, use_gpu=False),
+            scaling_config=ScalingConfig(num_workers=2, use_gpu=False),
         )
         results = trainer.fit()
     except Exception as e:

@@ -593,22 +593,23 @@ def test_graphsage_trainer(mock_graph):
     torch.manual_seed(0)
     np.random.seed(0)
     num_nodes = 2708
-    num_classes = 121
-    label_dim = 121
-    label_idx = 0
-    feature_dim = 50
-    feature_idx = 1
+
+    num_classes = 7#121
+    label_dim = 7#121
+    label_idx = 1#0
+    feature_dim = 1433#50
+    feature_idx = 0#1
     edge_type = 0
 
     model_path = tempfile.TemporaryDirectory()
-    model_path_name = model_path.name + "/gnnmodel-001-000000.pt"
+    model_path_name = model_path.name + "/gnnmodel.pt"
 
     run_args = f"""--data_dir /tmp/cora --mode train --trainer base --seed 123 \
 --backend snark --graph_type local --converter skip \
---batch_size 140 --learning_rate 0.005 --num_epochs 1 \
+--batch_size 140 --learning_rate 0.01 --num_epochs 1 \
 --node_type 0 --max_id -1 \
 --model_dir {model_path.name} --metric_dir {model_path.name} --save_path {model_path.name} \
---feature_idx 1 --feature_dim 50 --label_idx 0 --label_dim 121 --algo supervised \
+--feature_idx {feature_idx} --feature_dim {feature_dim} --label_idx {label_idx} --label_dim {label_dim} --algo supervised \
 --log_by_steps 1 --use_per_step_metrics""".split()
 
     run_dist(

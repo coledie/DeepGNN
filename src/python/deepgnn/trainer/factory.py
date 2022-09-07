@@ -424,6 +424,15 @@ class DeepGNNTrainingLoop:
             if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
                 self._save_checkpoint(epoch + 1)
         session.report(dict(loss=loss))
+        save_path = os.path.join(
+            f"{self.args.save_path}",
+            f"{PREFIX_CHECKPOINT}.pt",
+        )
+        torch.save(
+            {"state_dict": self.model.state_dict(), "epoch": epoch, "step": self.step},
+            save_path,
+        )
+
         """
         # Horovod: use train_sampler to determine the number of
         # examples in this worker's partition.

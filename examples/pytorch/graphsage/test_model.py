@@ -636,7 +636,7 @@ def test_graphsage_trainer(mock_graph):
         fanouts=[5, 5],
     )
 
-    graphsage.load_state_dict(torch.load(model_path_name)["state_dict"])
+    graphsage.load_state_dict({key.replace("module.", ""): value for key, value in torch.load(model_path_name)["state_dict"].items()})
     graphsage.eval()
 
     # Generate validation dataset from random indices

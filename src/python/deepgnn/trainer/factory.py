@@ -137,11 +137,6 @@ class DeepGNNTrainingLoop:
         )
 
         self.model = init_model_fn(self.args)
-        if self.args.trainer == TrainerType.BASE:
-            self.model = train.torch.prepare_model(self.model)
-        elif self.args.trainer == TrainerType.HVD:
-            # TODO necessary?
-            hvd.broadcast_parameters(self.model.state_dict(), root_rank=0)
 
         self.dataset = init_dataset_fn(
             args=self.args,
@@ -198,6 +193,12 @@ class DeepGNNTrainingLoop:
             if init_optimizer_fn is not None
             else None
         )
+        self.model_unwrapped = self.model
+        if self.args.trainer == TrainerType.BASE:
+            self.model = train.torch.prepare_model(self.model)
+        elif self.args.trainer == TrainerType.HVD:
+            # TODO necessary?
+            hvd.broadcast_parameters(self.model.state_dict(), root_rank=0)
 
         # TODO necessary?
         #hvd.broadcast_optimizer_state(self.optimizer, root_rank=0)
@@ -293,7 +294,7 @@ class DeepGNNTrainingLoop:
     ) -> BaseModel:
 
         model = self._init_model(model)
-        #self.dataset = dataset
+        self.dataset = dataset
 
         self.eval_dataset_for_training = eval_dataset_for_training
         self.optimizer = self._init_optimizer(optimizer) if optimizer else optimizer
@@ -342,7 +343,7 @@ class DeepGNNTrainingLoop:
 
                 # Calculate training metrics for one batch data.
                 metric = (  # move to model.get_metric(*args)
-                    self.model.compute_metric([pred], [label]).data.item()
+                    self.model_unwrapped.compute_metric([pred], [label]).data.item()
                     if self.args.use_per_step_metrics
                     else torch.tensor(0.0)
                 )
@@ -365,7 +366,7 @@ class DeepGNNTrainingLoop:
                     )
                     if self.args.use_per_step_metrics:
                         self.summary_writer.add_scalar(
-                            f"Training/{self.model.metric_name()}",
+                            f"Training/{self.model_unwrapped.metric_name()}",
                             train_metric,
                             self.global_step,
                         )
@@ -380,7 +381,7 @@ class DeepGNNTrainingLoop:
                         self._wrap_log(
                             f"epoch: {epoch}; step: {self.step:05d}; loss: {train_loss:.4f};"
                             + (
-                                f" {self.model.metric_name()}: {train_metric:.4f}; time: {duration:.4f}s"
+                                f" {self.model_unwrapped.metric_name()}: {train_metric:.4f}; time: {duration:.4f}s"
                                 if self.args.use_per_step_metrics
                                 else f" time: {duration:.4f}s"
                             )
@@ -396,7 +397,7 @@ class DeepGNNTrainingLoop:
                     eval_metric, eval_loss = self._evaluate(model)
                     if self.args.use_per_step_metrics:
                         self.summary_writer.add_scalar(
-                            f"Validation/{self.model.metric_name()}",
+                            f"Validation/{self.model_unwrapped.metric_name()}",
                             eval_metric,
                             self.global_step,
                         )
@@ -407,7 +408,7 @@ class DeepGNNTrainingLoop:
                         self._wrap_log(
                             f"epoch: {epoch}; step: {self.step:05d};"
                             + (
-                                f" Validation/{self.model.metric_name()}: {eval_metric:.4f}, Validation/Loss: {eval_loss:.4f}"
+                                f" Validation/{self.model_unwrapped.metric_name()}: {eval_metric:.4f}, Validation/Loss: {eval_loss:.4f}"
                                 if self.args.use_per_step_metrics
                                 else ""
                             )
@@ -444,7 +445,7 @@ class DeepGNNTrainingLoop:
         loss = hvd.allreduce(loss)
         self.logger.info(
             self._wrap_log(
-                f"AllReduced {self.model.metric_name()}: {metric:.4f}; loss: {loss:.4f}"
+                f"AllReduced {self.model_unwrapped.metric_name()}: {metric:.4f}; loss: {loss:.4f}"
             )
         )
         return metric, loss
@@ -498,7 +499,7 @@ class DeepGNNTrainingLoop:
                 eval_losses.append(loss.data.item())
 
                 if self.args.use_per_step_metrics:
-                    metric = self.model.compute_metric([pred], [label])
+                    metric = self.model_unwrapped.compute_metric([pred], [label])
                     eval_metrics.append(metric.data.item())
                 else:
                     preds.append(pred.detach().cpu())
@@ -511,10 +512,10 @@ class DeepGNNTrainingLoop:
             eval_metric = np.mean(eval_metrics) if len(eval_metrics) > 0 else 0
             eval_metric = torch.tensor(eval_metric)
         else:
-            eval_metric = self.model.compute_metric(preds, labels)
+            eval_metric = self.model_unwrapped.compute_metric(preds, labels)
         self.logger.info(
             self._wrap_log(
-                f"Evaluation {self.model.metric_name()}: {eval_metric:.4f}; data size: {data_size};"
+                f"Evaluation {self.model_unwrapped.metric_name()}: {eval_metric:.4f}; data size: {data_size};"
             )
         )
         eval_loss = np.mean(eval_losses) if len(eval_losses) > 0 else 0

@@ -586,9 +586,13 @@ def setup_module(module):
     )
 
 
-def test_graphsage_trainer():
+from main import init_args, create_model, create_dataset, create_optimizer
+from deepgnn.trainer.factory import run_dist
+
+def test_graphsage_trainer(mock_graph):
     torch.manual_seed(0)
     np.random.seed(0)
+    num_nodes = 2708
     num_classes = 7
     label_dim = 7
     label_idx = 1
@@ -599,16 +603,13 @@ def test_graphsage_trainer():
     model_path = tempfile.TemporaryDirectory()
     model_path_name = model_path.name + "/gnnmodel.pt"
 
-    run_args = f"""--data_dir /tmp/cora --mode train --trainer hvd --seed 123 \
+    run_args = f"""--data_dir /tmp/cora --mode train --trainer base --seed 123 \
 --backend snark --graph_type local --converter skip \
 --batch_size 140 --learning_rate 0.005 --num_epochs 1 \
 --node_type 0 --max_id -1 \
 --model_dir {model_path.name} --metric_dir {model_path.name} --save_path {model_path.name} \
 --feature_idx 1 --feature_dim 50 --label_idx 0 --label_dim 121 --algo supervised \
 --log_by_steps 1 --use_per_step_metrics""".split()
-
-    from main import init_args, create_model, create_dataset, create_optimizer
-    from deepgnn.trainer.factory import run_dist
 
     run_dist(
         init_model_fn=create_model,
@@ -617,6 +618,42 @@ def test_graphsage_trainer():
         init_args_fn=init_args,
         run_args=run_args,
     )
+
+    import os
+    print(os.listdir(model_path.name))
+
+    metric = F1Score()
+    g = mock_graph
+    graphsage = SupervisedGraphSage(
+        num_classes=num_classes,
+        metric=F1Score(),
+        label_idx=label_idx,
+        label_dim=label_dim,
+        feature_type=FeatureType.FLOAT,
+        feature_idx=feature_idx,
+        feature_dim=feature_dim,
+        edge_type=edge_type,
+        fanouts=[5, 5],
+    )
+
+    graphsage.load_state_dict(torch.load(model_path_name))
+    graphsage.train()
+
+    # Generate validation dataset from random indices
+    rand_indices = np.random.RandomState(seed=1).permutation(num_nodes)
+    val_ref = rand_indices[1000:1500]
+    simpler = MockFixedSimpleDataLoader(val_ref, query_fn=graphsage.query, graph=g)
+    trainloader = torch.utils.data.DataLoader(simpler)
+    it = iter(trainloader)
+    val_output_ref = graphsage.get_score(it.next())
+    val_labels = g.node_features(
+        val_ref, np.array([[label_idx, label_dim]]), FeatureType.FLOAT
+    ).argmax(1)
+    f1_ref = metric.compute(val_output_ref.argmax(axis=1), val_labels)
+
+    assert 0.85 < f1_ref and f1_ref < 0.95
+
+    model_dir.cleanup()
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ from deepgnn.pytorch.common.utils import (
     get_sorted_checkpoints,
     to_cuda,
 )
+from deepgnn.pytorch.common.consts import FP16_APEX, FP16_AMP, FP16_NO
+
 from deepgnn import (
     log_telemetry,
     TrainerType,
@@ -145,7 +147,12 @@ class DeepGNNTrainingLoop:
         )
 
         self.model = init_model_fn(self.args)
-        # TODO don't do for hvd?? self.model = train.torch.prepare_model(self.model)
+        if False:
+            self.model = train.torch.prepare_model(self.model)
+        else:
+            # TODO necessary?
+            hvd.broadcast_parameters(self.model.state_dict(), root_rank=0)
+
         self.dataset = init_dataset_fn(
             args=self.args,
             model=self.model,
@@ -165,17 +172,16 @@ class DeepGNNTrainingLoop:
                 prefetch_factor=self.args.prefetch_factor,
             )
         else:
-            #self.dataset.init_sampler()
-            #print(self.dataset.__dict__)
-            #self.dataset.sampler = self.dataset.sampler_class()
-            #len(self.dataset)
+            # TODO no compatibile with iterable dataset, requires indexing
+            self.dataset._torch_init_sampler()
             self.sampler = torch.utils.data.distributed.DistributedSampler(
                 self.dataset, num_replicas=hvd.size(), rank=hvd.rank()
             )
             self.dataset = torch.utils.data.DataLoader(
                 dataset=self.dataset,
                 num_workers=self.num_workers,
-                prefetch_factor=self.args.prefetch_factor,
+                batch_size=self.args.batch_size,
+                #prefetch_factor=self.args.prefetch_factor,
                 sampler=self.sampler,
             )
 
@@ -203,13 +209,18 @@ class DeepGNNTrainingLoop:
             else None
         )
 
-        # IF HOROVOD
+        # TODO necessary?
+        #hvd.broadcast_optimizer_state(self.optimizer, root_rank=0)
+        #
+        compression = (
+            hvd.Compression.fp16 if self.fp16_enabled() else hvd.Compression.none
+        )
         self.optimizer = hvd.DistributedOptimizer(
             self.optimizer,
             named_parameters=self.model.named_parameters(),
-            op=hvd.Average,  # hvd.Adasum if use_adasum else hvd.Average
+            compression=compression,
+            op=hvd.Average,
         )
-
 
         self._init_max_steps()
         model = self._initialize(
@@ -258,6 +269,20 @@ class DeepGNNTrainingLoop:
             self.logger.info(self._wrap_log(dump_gpu_memory()))
 
         return result
+
+    """
+    # HOROVOD eval metric
+    def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
+        metric, loss = super()._evaluate(model)
+        metric = hvd.allreduce(metric)
+        loss = hvd.allreduce(loss)
+        self.logger.info(
+            self._wrap_log(
+                f"AllReduced {self.model.metric_name()}: {metric:.4f}; loss: {loss:.4f}"
+            )
+        )
+        return metric, loss
+    """
 
     def _init_model(self, model: BaseModel) -> BaseModel:
         self.model = model
@@ -542,6 +567,10 @@ class DeepGNNTrainingLoop:
 
     def _should_stop(self) -> bool:
         return self.max_steps > 0 and self.step >= self.max_steps
+
+    def fp16_enabled(self) -> bool:
+        """Check if trainer should use fp16 mode."""
+        return self.args.gpu and self.args.fp16 != FP16_NO
 
     def _init_summary_writer(self, prefix: str):
         self.summary_writer = SummaryWriter(

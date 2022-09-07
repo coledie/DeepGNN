@@ -69,13 +69,9 @@ class DeepGNNTrainingLoop:
     - For distributed training, please use DDPTrainer or HVDTrainer.
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self):
         """Initialize trainer."""
         self.logger = get_logger()
-        # Initialize rank, local_rank, world_size.
-        self.rank = 0
-        self.local_rank = 0
-        self.world_size = 1
 
         # Initialize trainer state.
         self.step = 0
@@ -83,9 +79,6 @@ class DeepGNNTrainingLoop:
         self.epochs_trained = 0
         self.steps_in_epoch_trained = 0
         self.start_time = time.time()
-        self.max_steps = 0
-
-        self.config = config
 
     def run(self, config):
         """
@@ -98,49 +91,62 @@ class DeepGNNTrainingLoop:
             eval_during_train_dataset: optional dataset for evaluation
                 during training.
         """
-        hvd.init()
-        #torch.manual_seed(seed)
-        torch.set_num_threads(1)  # Horovod: limit # of CPU threads to be used per worker.
-
         """
-        if use_cuda:
-            # Horovod: pin GPU to local rank.
-            torch.cuda.set_device(hvd.local_rank())
-            torch.cuda.manual_seed(seed)
-        """
-
-        """
-        kwargs = {"num_workers": 1, "pin_memory": True} if use_cuda else {}
-        data_dir = data_dir or "~/data"
         with FileLock(os.path.expanduser("~/.horovod_lock")):
-            train_dataset = datasets.MNIST(
-                data_dir,
-                train=True,
-                download=True,
-                transform=transforms.Compose(
-                    [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]
-                ),
-            )
         """
-
-        init_model_fn = self.config["init_model_fn"]
-        init_dataset_fn = self.config["init_dataset_fn"]
-        init_optimizer_fn = self.config["init_optimizer_fn"]
-        init_args_fn = self.config["init_args_fn"]
-        self.args = self.config["args"]
-        init_eval_dataset_for_training_fn = self.config[
+        init_model_fn = config["init_model_fn"]
+        init_dataset_fn = config["init_dataset_fn"]
+        init_optimizer_fn = config["init_optimizer_fn"]
+        init_eval_dataset_for_training_fn = config[
             "init_eval_dataset_for_training_fn"
         ]
+        self.args = config["args"]
+
+        hvd.init()
+        torch.manual_seed(self.args.seed)
+        torch.set_num_threads(1)  # Horovod: limit # of CPU threads to be used per worker.
+
+        # Initialize rank, local_rank, world_size.
+        self.rank = 0
+        self.local_rank = 0
+        if self.args.trainer == TrainerType.HVD:
+            self.local_rank = hvd.local_rank()
+        self.world_size = 1
+
+        self.model = init_model_fn(self.args)
+
+        self.optimizer = (
+            init_optimizer_fn(
+                args=self.args, model=self.model, world_size=self.world_size
+            )
+            if init_optimizer_fn is not None
+            else None
+        )
+
+        self.model_unwrapped = self.model
+        if self.args.trainer == TrainerType.BASE:
+            self.model = train.torch.prepare_model(self.model)
+        elif self.args.trainer == TrainerType.HVD:
+            # TODO necessary?
+            hvd.broadcast_parameters(self.model.state_dict(), root_rank=0)
+            # TODO necessary?
+            #hvd.broadcast_optimizer_state(self.optimizer, root_rank=0)
+            compression = (
+                hvd.Compression.fp16 if self.fp16_enabled() else hvd.Compression.none
+            )
+            self.optimizer = hvd.DistributedOptimizer(
+                self.optimizer,
+                named_parameters=self.model.named_parameters(),
+                compression=compression,
+                op=hvd.Average,
+            )
 
         self.backend = create_backend(
             BackendOptions(self.args), is_leader=(self.rank == 0)
         )
-
-        self.model = init_model_fn(self.args)
-
         self.dataset = init_dataset_fn(
             args=self.args,
-            model=self.model,
+            model=self.model_unwrapped,
             rank=self.rank,
             world_size=self.world_size,
             backend=self.backend,
@@ -175,7 +181,7 @@ class DeepGNNTrainingLoop:
         if init_eval_dataset_for_training_fn is not None:
             self.eval_dataset_for_training = init_eval_dataset_for_training_fn(
                 args=self.args,
-                model=self.model,
+                model=self.model_unwrapped,
                 rank=self.rank,
                 world_size=self.world_size,
                 backend=self.backend,
@@ -186,32 +192,6 @@ class DeepGNNTrainingLoop:
                     num_workers=self.args.data_parallel_num,
                     prefetch_factor=self.args.prefetch_factor,
                 )
-        self.optimizer = (
-            init_optimizer_fn(
-                args=self.args, model=self.model, world_size=self.world_size
-            )
-            if init_optimizer_fn is not None
-            else None
-        )
-        self.model_unwrapped = self.model
-        if self.args.trainer == TrainerType.BASE:
-            self.model = train.torch.prepare_model(self.model)
-        elif self.args.trainer == TrainerType.HVD:
-            # TODO necessary?
-            hvd.broadcast_parameters(self.model.state_dict(), root_rank=0)
-
-        # TODO necessary?
-        #hvd.broadcast_optimizer_state(self.optimizer, root_rank=0)
-        #
-        compression = (
-            hvd.Compression.fp16 if self.fp16_enabled() else hvd.Compression.none
-        )
-        self.optimizer = hvd.DistributedOptimizer(
-            self.optimizer,
-            named_parameters=self.model.named_parameters(),
-            compression=compression,
-            op=hvd.Average,
-        )
 
         self._init_max_steps()
         model = self._initialize(
@@ -255,7 +235,6 @@ class DeepGNNTrainingLoop:
             self.world_size,
             LOG_PROPS_PLATFORM_PYTORCH,
         )
-
         if self.args.gpu:
             self.logger.info(self._wrap_log(dump_gpu_memory()))
 
@@ -267,6 +246,7 @@ class DeepGNNTrainingLoop:
 
         if self.args.gpu:
             torch.cuda.set_device(self.local_rank)
+            torch.cuda.manual_seed(self.args.seed)
             self.model.cuda()
 
         if self.rank == 0:
@@ -298,7 +278,6 @@ class DeepGNNTrainingLoop:
 
         self.eval_dataset_for_training = eval_dataset_for_training
         self.optimizer = self._init_optimizer(optimizer) if optimizer else optimizer
-
         return model
 
     def _train(self, model: BaseModel):
@@ -446,19 +425,6 @@ class DeepGNNTrainingLoop:
             )
         )
         """
-    """
-    # HOROVOD eval metric
-    def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
-        metric, loss = super()._evaluate(model)
-        metric = hvd.allreduce(metric)
-        loss = hvd.allreduce(loss)
-        self.logger.info(
-            self._wrap_log(
-                f"AllReduced {self.model_unwrapped.metric_name()}: {metric:.4f}; loss: {loss:.4f}"
-            )
-        )
-        return metric, loss
-    """
 
     def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.args.mode != TrainMode.TRAIN:
@@ -529,6 +495,17 @@ class DeepGNNTrainingLoop:
         )
         eval_loss = np.mean(eval_losses) if len(eval_losses) > 0 else 0
         eval_loss = torch.tensor(eval_loss)
+        """
+        # HOROVOD eval metric
+        metric, loss = super()._evaluate(model)
+        metric = hvd.allreduce(metric)
+        loss = hvd.allreduce(loss)
+        self.logger.info(
+            self._wrap_log(
+                f"AllReduced {self.model_unwrapped.metric_name()}: {metric:.4f}; loss: {loss:.4f}"
+            )
+        )
+        """
         return eval_metric, eval_loss
 
     def _inference(self, model: BaseModel):
@@ -666,14 +643,6 @@ class DeepGNNTrainingLoop:
         return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 
-"""
-def metric_average(val, name):
-    tensor = torch.tensor(val)
-    avg_tensor = hvd.allreduce(tensor, name=name)
-    return avg_tensor.item()
-"""
-
-
 def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(allow_abbrev=False)
@@ -731,7 +700,7 @@ def run_dist(
     # TODO add trainer worker rank value
     # TODO DeepGNNTrainingLooop init - start server?
     try:
-        training_loop = DeepGNNTrainingLoop(config)  # DeepGNNTrainingLoop
+        training_loop = DeepGNNTrainingLoop()  # DeepGNNTrainingLoop
         if args.trainer == TrainerType.BASE:
             if False:# TODO tf:
                 trainer_class = TensorflowTrainer

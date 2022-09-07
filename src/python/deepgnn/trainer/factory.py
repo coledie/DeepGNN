@@ -602,7 +602,7 @@ class DeepGNNTrainingLoop:
             f"{PREFIX_CHECKPOINT}-{epoch:03}-{self.step:06}.pt",
         )
         torch.save(
-            {"state_dict": self.model.state_dict(), "epoch": epoch, "step": self.step},
+            {"state_dict": self.model_unwrapped.state_dict(), "epoch": epoch, "step": self.step},
             save_path,
         )
         self.logger.info(self._wrap_log(f"Saved checkpoint to {save_path}."))

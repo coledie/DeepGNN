@@ -588,20 +588,20 @@ def setup_module(module):
 
 from main import init_args, create_model, create_dataset, create_optimizer
 from deepgnn.trainer.factory import run_dist
-
+import deepgnn.graph_engine.snark.local as local
 def test_graphsage_trainer(mock_graph):
     torch.manual_seed(0)
     np.random.seed(0)
     num_nodes = 2708
-    num_classes = 7
-    label_dim = 7
-    label_idx = 1
-    feature_dim = 1433
-    feature_idx = 0
+    num_classes = 121
+    label_dim = 121
+    label_idx = 0
+    feature_dim = 50
+    feature_idx = 1
     edge_type = 0
 
     model_path = tempfile.TemporaryDirectory()
-    model_path_name = model_path.name + "/gnnmodel.pt"
+    model_path_name = model_path.name + "/gnnmodel-001-000000.pt"
 
     run_args = f"""--data_dir /tmp/cora --mode train --trainer base --seed 123 \
 --backend snark --graph_type local --converter skip \
@@ -620,10 +620,10 @@ def test_graphsage_trainer(mock_graph):
     )
 
     import os
-    print(os.listdir(model_path.name))
+    print(os.listdir(model_path.name), os.listdir(os.path.join(model_path.name, "train")))
 
     metric = F1Score()
-    g = mock_graph
+    g = local.Client("/tmp/cora", [0, 1])#mock_graph
     graphsage = SupervisedGraphSage(
         num_classes=num_classes,
         metric=F1Score(),
@@ -636,8 +636,8 @@ def test_graphsage_trainer(mock_graph):
         fanouts=[5, 5],
     )
 
-    graphsage.load_state_dict(torch.load(model_path_name))
-    graphsage.train()
+    graphsage.load_state_dict(torch.load(model_path_name)["state_dict"])
+    graphsage.eval()
 
     # Generate validation dataset from random indices
     rand_indices = np.random.RandomState(seed=1).permutation(num_nodes)
@@ -652,8 +652,7 @@ def test_graphsage_trainer(mock_graph):
     f1_ref = metric.compute(val_output_ref.argmax(axis=1), val_labels)
 
     assert 0.85 < f1_ref and f1_ref < 0.95
-
-    model_dir.cleanup()
+    model_path.cleanup()
 
 
 if __name__ == "__main__":

@@ -86,19 +86,9 @@ class DeepGNNTrainingLoop:
         self.max_steps = 0
 
         self.config = config
-        '''
-        lr_scaler = hvd.size() if not use_adasum else 1
-        '''
 
     def run(self, config):
         """
-    def run(
-        self,
-        model: BaseModel,
-        dataset: TorchDeepGNNDataset,
-        optimizer: Optional[Optimizer] = None,
-        eval_dataset_for_training: TorchDeepGNNDataset = None,
-    ) -> Optional[torch.Tensor]:
         Perform training/evaluation/inference according to training mode set in constructor.
 
         Args:
@@ -147,9 +137,9 @@ class DeepGNNTrainingLoop:
         )
 
         self.model = init_model_fn(self.args)
-        if False:
+        if self.args.trainer == TrainerType.BASE:
             self.model = train.torch.prepare_model(self.model)
-        else:
+        elif self.args.trainer == TrainerType.HVD:
             # TODO necessary?
             hvd.broadcast_parameters(self.model.state_dict(), root_rank=0)
 
@@ -269,20 +259,6 @@ class DeepGNNTrainingLoop:
             self.logger.info(self._wrap_log(dump_gpu_memory()))
 
         return result
-
-    """
-    # HOROVOD eval metric
-    def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
-        metric, loss = super()._evaluate(model)
-        metric = hvd.allreduce(metric)
-        loss = hvd.allreduce(loss)
-        self.logger.info(
-            self._wrap_log(
-                f"AllReduced {self.model.metric_name()}: {metric:.4f}; loss: {loss:.4f}"
-            )
-        )
-        return metric, loss
-    """
 
     def _init_model(self, model: BaseModel) -> BaseModel:
         self.model = model
@@ -460,6 +436,19 @@ class DeepGNNTrainingLoop:
             )
         )
         """
+    """
+    # HOROVOD eval metric
+    def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
+        metric, loss = super()._evaluate(model)
+        metric = hvd.allreduce(metric)
+        loss = hvd.allreduce(loss)
+        self.logger.info(
+            self._wrap_log(
+                f"AllReduced {self.model.metric_name()}: {metric:.4f}; loss: {loss:.4f}"
+            )
+        )
+        return metric, loss
+    """
 
     def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.args.mode != TrainMode.TRAIN:
@@ -591,6 +580,7 @@ class DeepGNNTrainingLoop:
 
     def _create_lr_scheduler(self, optimizer: Optimizer) -> Optional[LambdaLR]:
         num_training_steps = self.max_steps * self.args.num_epochs
+        #lr_scaler = hvd.size() if not use_adasum else 1
         return (
             get_linear_schedule_with_warmup(
                 optimizer,

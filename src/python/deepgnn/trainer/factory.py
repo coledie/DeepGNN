@@ -240,7 +240,6 @@ class DeepGNNTrainingLoop:
         self._init_summary_writer(prefix="train/worker")
         model.train()
 
-        self.step = self.steps_in_epoch_trained
         for epoch in range(self.epochs_trained, self.args.num_epochs):
             for i, data in enumerate(self.dataset):
                 if i < self.step:

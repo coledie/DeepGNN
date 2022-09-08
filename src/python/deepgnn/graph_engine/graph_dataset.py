@@ -4,7 +4,7 @@
 
 from enum import Enum
 from inspect import signature
-from typing import Callable, Union
+from typing import Callable, Union, Type
 from deepgnn.graph_engine._base import Graph
 from deepgnn.graph_engine.backends.common import GraphEngineBackend
 from deepgnn.graph_engine.prefetch import Generator
@@ -57,7 +57,7 @@ class DeepGNNDataset:
 
     def __init__(
         self,
-        sampler_class: BaseSampler,
+        sampler_class: Type[BaseSampler],
         query_fn: Callable,
         backend: GraphEngineBackend = None,
         num_workers: int = 1,

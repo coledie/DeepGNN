@@ -1,7 +1,7 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
 """Commmon functions to create datasets in TF."""
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Type
 from deepgnn import get_logger
 import tensorflow as tf
 from deepgnn.graph_engine.backends.common import GraphEngineBackend
@@ -11,7 +11,7 @@ from typing import Callable
 
 
 def create_tf_dataset(
-    sampler_class: BaseSampler,
+    sampler_class: Type[BaseSampler],
     query_fn: Callable,
     backend: GraphEngineBackend = None,
     num_workers: int = 1,

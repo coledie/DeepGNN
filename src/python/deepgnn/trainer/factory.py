@@ -3,7 +3,7 @@
 import os
 import argparse
 import time
-from typing import Optional, Dict, Callable, List, Tuple, IO
+from typing import Optional, Dict, Callable, List, Tuple, IO, Type
 
 import numpy as np
 import torch
@@ -36,7 +36,7 @@ from deepgnn.pytorch.common.utils import (
     get_sorted_checkpoints,
     to_cuda,
 )
-from deepgnn.pytorch.common.consts import FP16_APEX, FP16_AMP, FP16_NO
+from deepgnn.pytorch.common.consts import FP16_NO
 from deepgnn import (
     log_telemetry,
     TrainerType,
@@ -74,7 +74,10 @@ class DeepGNNTrainingLoop:
         """
         self.args = config["args"]
         self._initialize(
-            config["init_model_fn"], config["init_dataset_fn"], config["init_optimizer_fn"], config["init_eval_dataset_for_training_fn"]
+            config["init_model_fn"],
+            config["init_dataset_fn"],
+            config["init_optimizer_fn"],
+            config["init_eval_dataset_for_training_fn"],
         )
 
         log_telemetry(
@@ -120,12 +123,14 @@ class DeepGNNTrainingLoop:
 
     def _initialize(
         self,
-        init_model_fn: BaseModel,
-        init_dataset_fn: TorchDeepGNNDataset,
-        init_optimizer_fn: Optional[Optimizer] = None,
-        init_eval_dataset_for_training_fn: TorchDeepGNNDataset = None,
-    ) -> BaseModel:
-        """Initialize all training loop variables."""
+        init_model_fn: Callable[..., BaseModel],
+        init_dataset_fn: Callable[..., TorchDeepGNNDataset],
+        init_optimizer_fn: Optional[Callable[..., Optimizer]] = None,
+        init_eval_dataset_for_training_fn: Optional[
+            Callable[..., TorchDeepGNNDataset]
+        ] = None,
+    ):
+        """Initialize all training loop variables for the current training worker."""
         if self.args.trainer == TrainerType.HVD:
             hvd.init()
         torch.manual_seed(self.args.seed)
@@ -154,10 +159,12 @@ class DeepGNNTrainingLoop:
         self.model = self._init_model(init_model_fn)
         self.optimizer = self._init_optimizer(init_optimizer_fn)
         self.dataset = self._init_dataset(init_dataset_fn)
-        self.eval_dataset_for_training = self._init_dataset(init_eval_dataset_for_training_fn)
+        self.eval_dataset_for_training = self._init_dataset(
+            init_eval_dataset_for_training_fn
+        )
         self._load_checkpoint()
 
-    def _init_model(self, init_model_fn: callable) -> BaseModel:
+    def _init_model(self, init_model_fn: Callable[..., BaseModel]) -> BaseModel:
         model = init_model_fn(self.args)
         self.model_name = type(model).__name__
         self.model_unwrapped = model
@@ -182,7 +189,9 @@ class DeepGNNTrainingLoop:
 
         return model
 
-    def _init_optimizer(self, init_optimizer_fn: Optimizer) -> Optimizer:
+    def _init_optimizer(
+        self, init_optimizer_fn: Optional[Callable[..., Optimizer]]
+    ) -> Optimizer:
         if not init_optimizer_fn:
             return None
 
@@ -210,10 +219,12 @@ class DeepGNNTrainingLoop:
             )
         return optimizer
 
-    def _init_dataset(self, init_dataset_fn: callable) -> Optimizer:
+    def _init_dataset(
+        self, init_dataset_fn: Optional[Callable[..., TorchDeepGNNDataset]]
+    ) -> Optimizer:
         if not init_dataset_fn:
             return None
-        if not hasattr(self, "backend") or self.backend is None:
+        if not hasattr(self, "backend") or self.backend is None:  # type: ignore
             self.backend = create_backend(
                 BackendOptions(self.args), is_leader=(self.rank == 0)
             )
@@ -382,9 +393,7 @@ class DeepGNNTrainingLoop:
         data_size = 0
         is_eval_during_training = self.args.mode == TrainMode.TRAIN
         dataset = (
-            self.eval_dataset_for_training
-            if is_eval_during_training
-            else self.dataset
+            self.eval_dataset_for_training if is_eval_during_training else self.dataset
         )
         assert dataset is not None
         with torch.no_grad():
@@ -541,7 +550,9 @@ class DeepGNNTrainingLoop:
                     )
                 )
                 if self.args.trainer == TrainerType.HVD:
-                    hvd.broadcast_parameters(self.model.state_dict(), root_rank=self.rank)
+                    hvd.broadcast_parameters(
+                        self.model.state_dict(), root_rank=self.rank
+                    )
                     hvd.broadcast_optimizer_state(self.optimizer, root_rank=self.rank)
 
             del init_ckpt
@@ -594,6 +605,7 @@ def run_dist(
     init_model_fn: Callable,
     init_dataset_fn: Callable,
     init_optimizer_fn: Optional[Callable] = None,
+    training_loop_class: Type[DeepGNNTrainingLoop] = DeepGNNTrainingLoop,
     init_args_fn: Optional[Callable] = None,
     run_args: Optional[List] = None,
     init_eval_dataset_for_training_fn: Optional[Callable] = None,
@@ -622,19 +634,21 @@ def run_dist(
         elif args.trainer == TrainerType.DDP:
             trainer_class = None
         elif args.trainer == TrainerType.PS:
-            if not tf:
-                raise 
+            if False:
+                raise
             trainer_class = None
         elif args.trainer == TrainerType.MULTINODE:
-            if not tf:
-                raise 
+            if False:
+                raise
             trainer_class = None
 
-        training_loop = DeepGNNTrainingLoop()
+        training_loop = training_loop_class()
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,
-            scaling_config=ScalingConfig(num_workers=args.train_workers, use_gpu=args.gpu),
+            scaling_config=ScalingConfig(
+                num_workers=args.train_workers, use_gpu=args.gpu
+            ),
         )
         results = trainer.fit()
     except Exception as e:

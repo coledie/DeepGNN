@@ -586,9 +586,11 @@ def setup_module(module):
     )
 
 
-from main import init_args, create_model, create_dataset, create_optimizer
+from main import init_args, create_model, create_dataset, create_optimizer  # type: ignore
 from deepgnn.trainer.factory import run_dist
 import deepgnn.graph_engine.snark.local as local
+
+
 def test_graphsage_trainer(mock_graph):
     torch.manual_seed(0)
     np.random.seed(0)
@@ -621,7 +623,7 @@ def test_graphsage_trainer(mock_graph):
     )
 
     metric = F1Score()
-    g = local.Client("/tmp/cora", [0, 1])#mock_graph
+    g = local.Client("/tmp/cora", [0, 1])  # mock_graph
     graphsage = SupervisedGraphSage(
         num_classes=num_classes,
         metric=F1Score(),
@@ -634,7 +636,12 @@ def test_graphsage_trainer(mock_graph):
         fanouts=[5, 5],
     )
 
-    graphsage.load_state_dict({key.replace("module.", ""): value for key, value in torch.load(model_path_name)["state_dict"].items()})
+    graphsage.load_state_dict(
+        {
+            key.replace("module.", ""): value
+            for key, value in torch.load(model_path_name)["state_dict"].items()
+        }
+    )
     graphsage.eval()
 
     # Generate validation dataset from random indices

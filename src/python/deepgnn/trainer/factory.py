@@ -145,7 +145,13 @@ class DeepGNNTrainingLoop:
         self.local_rank = 0
         if self.args.trainer == TrainerType.HVD:
             self.local_rank = hvd.local_rank()
-        self._init_max_steps()
+
+        self.max_steps = (
+            self.args.max_samples // (self.world_size * self.args.batch_size)
+            if self.args.max_samples > 0
+            else -1
+        )
+        self.logger.info(self._wrap_log(f"Max steps per epoch:{self.max_steps}"))
 
         self.model = self._init_model(init_model_fn)
         self.optimizer = self._init_optimizer(init_optimizer_fn)
@@ -199,7 +205,15 @@ class DeepGNNTrainingLoop:
                 op=hvd.Average,
             )
 
-        self.lr_scheduler = self._create_lr_scheduler(optimizer)  # TODO horovod compat?
+        self.lr_scheduler = None
+        if self.max_steps > 0:
+            #lr_scaler = hvd.size() if not use_adasum else 1
+            num_training_steps = self.max_steps * self.args.num_epochs
+            self.lr_scheduler = get_linear_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=self.args.warmup * num_training_steps,
+                num_training_steps=num_training_steps,
+            )
         return optimizer
 
     def _init_dataset(self, init_dataset_fn: callable) -> Optimizer:
@@ -392,21 +406,20 @@ class DeepGNNTrainingLoop:
         if self.args.mode != TrainMode.TRAIN:
             self._init_summary_writer(prefix="evaluate/worker")
         model.eval()
-
         preds = []
         labels = []
         eval_metrics = []
         eval_losses = []
         data_size = 0
+        is_eval_during_training = self.args.mode == TrainMode.TRAIN
         dataset = (
             self.eval_dataset_for_training
-            if self.args.mode == TrainMode.TRAIN
+            if is_eval_during_training
             else self.dataset
         )
         assert dataset is not None
         with torch.no_grad():
             for data in dataset:
-                is_eval_during_training = self.args.mode == TrainMode.TRAIN
                 if not is_eval_during_training:
                     self._increment_step()
                 self._prepare_data(data)
@@ -445,18 +458,18 @@ class DeepGNNTrainingLoop:
                 if self._should_stop():
                     break
 
-        if self.args.use_per_step_metrics:
-            eval_metric = np.mean(eval_metrics) if len(eval_metrics) > 0 else 0
-            eval_metric = torch.tensor(eval_metric)
-        else:
-            eval_metric = self.model_unwrapped.compute_metric(preds, labels)
-        self.logger.info(
-            self._wrap_log(
-                f"Evaluation {self.model_unwrapped.metric_name()}: {eval_metric:.4f}; data size: {data_size};"
+            if self.args.use_per_step_metrics:
+                eval_metric = np.mean(eval_metrics) if len(eval_metrics) > 0 else 0
+                eval_metric = torch.tensor(eval_metric)
+            else:
+                eval_metric = self.model_unwrapped.compute_metric(preds, labels)
+            self.logger.info(
+                self._wrap_log(
+                    f"Evaluation {self.model_unwrapped.metric_name()}: {eval_metric:.4f}; data size: {data_size};"
+                )
             )
-        )
-        eval_loss = np.mean(eval_losses) if len(eval_losses) > 0 else 0
-        eval_loss = torch.tensor(eval_loss)
+            eval_loss = np.mean(eval_losses) if len(eval_losses) > 0 else 0
+            eval_loss = torch.tensor(eval_loss)
         """
         # HOROVOD eval metric
         metric, loss = super()._evaluate(model)
@@ -510,11 +523,6 @@ class DeepGNNTrainingLoop:
         """Check if trainer should use fp16 mode."""
         return self.args.gpu and self.args.fp16 != FP16_NO
 
-    def _init_summary_writer(self, prefix: str):
-        self.summary_writer = SummaryWriter(
-            os.path.join(self.args.metric_dir, f"{prefix}-{self.rank}")
-        )
-
     def _check_duration(self) -> float:
         duration = time.time() - self.start_time
         self.start_time = time.time()
@@ -526,19 +534,6 @@ class DeepGNNTrainingLoop:
 
     def _wrap_log(self, content: str) -> str:
         return f"[{self.world_size},{self.rank}] {content}"
-
-    def _create_lr_scheduler(self, optimizer: Optimizer) -> Optional[LambdaLR]:
-        num_training_steps = self.max_steps * self.args.num_epochs
-        #lr_scaler = hvd.size() if not use_adasum else 1
-        return (
-            get_linear_schedule_with_warmup(
-                optimizer,
-                num_warmup_steps=self.args.warmup * num_training_steps,
-                num_training_steps=num_training_steps,
-            )
-            if self.max_steps > 0
-            else None
-        )
 
     def _save_checkpoint(self, epoch: int):
         # Don't save for last step to avoid duplication with ckpt after epoch finished.
@@ -580,13 +575,10 @@ class DeepGNNTrainingLoop:
 
             del init_ckpt
 
-    def _init_max_steps(self):
-        self.max_steps = (
-            self.args.max_samples // (self.world_size * self.args.batch_size)
-            if self.args.max_samples > 0
-            else -1
+    def _init_summary_writer(self, prefix: str):
+        self.summary_writer = SummaryWriter(
+            os.path.join(self.args.metric_dir, f"{prefix}-{self.rank}")
         )
-        self.logger.info(self._wrap_log(f"Max steps per epoch:{self.max_steps}"))
 
     def _get_embedding_writer(self) -> IO[str]:
         embed_path = os.path.join(

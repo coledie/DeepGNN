@@ -86,7 +86,7 @@ class DeepGNNTrainingLoop:
             self.args.user_name,
             self.args.job_id,
             self.rank,
-            self.world_size,
+            self.args.train_workers,
             LOG_PROPS_PLATFORM_PYTORCH,
         )
 
@@ -110,7 +110,7 @@ class DeepGNNTrainingLoop:
             self.args.user_name,
             self.args.job_id,
             self.rank,
-            self.world_size,
+            self.args.train_workers,
             LOG_PROPS_PLATFORM_PYTORCH,
         )
         if self.args.gpu:
@@ -126,28 +126,27 @@ class DeepGNNTrainingLoop:
         init_eval_dataset_for_training_fn: TorchDeepGNNDataset = None,
     ) -> BaseModel:
         """Initialize all training loop variables."""
-        hvd.init()
+        if self.args.trainer == TrainerType.HVD:
+            hvd.init()
         torch.manual_seed(self.args.seed)
         torch.set_num_threads(1)  # Horovod: limit # of CPU threads to be used per worker.
 
         self.logger = get_logger()
 
-        # Initialize trainer state.
         self.step = 0
         self.global_step = 0
         self.epochs_trained = 0
         self.steps_in_epoch_trained = 0
         self.start_time = time.time()
 
-        # Initialize rank, local_rank, world_size.
-        self.world_size = 1
         self.rank = 0
         self.local_rank = 0
         if self.args.trainer == TrainerType.HVD:
+            self.rank = hvd.rank()
             self.local_rank = hvd.local_rank()
 
         self.max_steps = (
-            self.args.max_samples // (self.world_size * self.args.batch_size)
+            self.args.max_samples // (self.args.train_workers * self.args.batch_size)
             if self.args.max_samples > 0
             else -1
         )
@@ -166,7 +165,7 @@ class DeepGNNTrainingLoop:
             model = train.torch.prepare_model(model)
         elif self.args.trainer == TrainerType.HVD:
             # TODO necessary?
-            hvd.broadcast_parameters(model.state_dict(), root_rank=0)
+            hvd.broadcast_parameters(model.state_dict(), root_rank=self.rank)
 
         if self.args.gpu:
             torch.cuda.set_device(self.local_rank)
@@ -190,7 +189,7 @@ class DeepGNNTrainingLoop:
             return None
 
         optimizer = init_optimizer_fn(
-            args=self.args, model=self.model, world_size=self.world_size
+            args=self.args, model=self.model, world_size=self.args.train_workers
         )
         if self.args.trainer == TrainerType.HVD:
             # TODO necessary?
@@ -227,7 +226,7 @@ class DeepGNNTrainingLoop:
             args=self.args,
             model=self.model_unwrapped,
             rank=self.rank,
-            world_size=self.world_size,
+            world_size=self.args.train_workers,
             backend=self.backend,
         )
         num_workers = (
@@ -348,7 +347,6 @@ class DeepGNNTrainingLoop:
                     and self.args.eval_during_train_by_steps > 0
                     and self.step % self.args.eval_during_train_by_steps == 0
                 ):
-                    model.eval()
                     eval_metric, eval_loss = self._evaluate(model)
                     if self.args.use_per_step_metrics:
                         self.summary_writer.add_scalar(
@@ -533,7 +531,7 @@ class DeepGNNTrainingLoop:
             to_cuda(data)
 
     def _wrap_log(self, content: str) -> str:
-        return f"[{self.world_size},{self.rank}] {content}"
+        return f"[{self.args.train_workers},{self.rank}] {content}"
 
     def _save_checkpoint(self, epoch: int):
         # Don't save for last step to avoid duplication with ckpt after epoch finished.
@@ -630,11 +628,11 @@ def run_dist(
     """Public api."""
     args = get_args(init_args_fn, run_args)
     config = {
+        "args": args,
         "init_model_fn": init_model_fn,
-        "init_dataset_fn": init_dataset_fn,
         "init_optimizer_fn": init_optimizer_fn,
         "init_args_fn": init_args_fn,
-        "args": args,
+        "init_dataset_fn": init_dataset_fn,
         "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
     }
 
@@ -642,10 +640,7 @@ def run_dist(
     # TODO add trainer worker rank value
     # TODO DeepGNNTrainingLooop init - start server?
     try:
-        ray.init(
-            num_cpus=4, num_gpus=0, include_dashboard=False  # Need 2x num_workers
-        )  # TODO how to set how many cpus each trainer is allocated
-        training_loop = DeepGNNTrainingLoop()
+        ray.init(include_dashboard=False)
 
         if args.trainer == TrainerType.BASE:
             if False:# TODO tf:
@@ -665,10 +660,11 @@ def run_dist(
                 raise 
             trainer_class = None
 
+        training_loop = DeepGNNTrainingLoop()
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,
-            scaling_config=ScalingConfig(num_workers=2, use_gpu=False),
+            scaling_config=ScalingConfig(num_workers=args.train_workers, use_gpu=args.gpu),
         )
         results = trainer.fit()
     except Exception as e:

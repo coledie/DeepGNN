@@ -14,6 +14,7 @@ def init_trainer_args(parser: argparse.ArgumentParser):
     """Configure trainer."""
     group = parser.add_argument_group("Trainer Parameters")
     group.add_argument("--trainer", type=TrainerType, default=TrainerType.BASE, choices=[TrainerType.BASE, TrainerType.HVD, TrainerType.DDP], help="Trainer type.")
+    group.add_argument("--train_workers", type=int, default=1, help="Number of training workers.")
     group.add_argument("--user_name", type=str, default=get_current_user(), help="User name when running jobs.")
     group.add_argument("--mode", type=TrainMode, default=TrainMode.TRAIN, choices=[TrainMode.TRAIN, TrainMode.EVALUATE, TrainMode.INFERENCE], help="Run mode.")
     group.add_argument("--num_epochs", default=1, type=int, help="Number of epochs for training.")

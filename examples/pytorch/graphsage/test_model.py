@@ -604,7 +604,7 @@ def test_graphsage_trainer(mock_graph):
     model_path = tempfile.TemporaryDirectory()
     model_path_name = model_path.name + "/gnnmodel.pt"
 
-    run_args = f"""--data_dir /tmp/cora --mode train --trainer base --seed 123 \
+    run_args = f"""--data_dir /tmp/cora --mode train --trainer base --train_workers 1 --seed 123 \
 --backend snark --graph_type local --converter skip \
 --batch_size 140 --learning_rate 0.01 --num_epochs 1 \
 --node_type 0 --max_id -1 \

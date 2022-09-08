@@ -594,11 +594,11 @@ def test_graphsage_trainer(mock_graph):
     np.random.seed(0)
     num_nodes = 2708
 
-    num_classes = 7#121
-    label_dim = 7#121
-    label_idx = 1#0
-    feature_dim = 1433#50
-    feature_idx = 0#1
+    num_classes = 7
+    label_dim = 7
+    label_idx = 1
+    feature_dim = 1433
+    feature_idx = 0
     edge_type = 0
 
     model_path = tempfile.TemporaryDirectory()
@@ -619,9 +619,6 @@ def test_graphsage_trainer(mock_graph):
         init_args_fn=init_args,
         run_args=run_args,
     )
-
-    import os
-    print(os.listdir(model_path.name), os.listdir(os.path.join(model_path.name, "train")))
 
     metric = F1Score()
     g = local.Client("/tmp/cora", [0, 1])#mock_graph

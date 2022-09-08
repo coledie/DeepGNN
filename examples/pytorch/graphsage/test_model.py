@@ -584,7 +584,7 @@ def setup_module(module):
     os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join(os.path.dirname(__file__), "..", "..", "..", "src", "cc", "lib", lib_name)
 
 from main import init_args, create_model, create_dataset, create_optimizer  # type: ignore
-from deepgnn.trainer.factory import run_dist
+from deepgnn.graph_engine.trainer.factory import run_dist
 import deepgnn.graph_engine.snark.local as local
 
 

@@ -15,7 +15,7 @@ from deepgnn.pytorch.common.utils import (
 )
 from deepgnn.pytorch.encoding import get_feature_encoder
 from deepgnn.pytorch.modeling import BaseModel
-from deepgnn.trainer.factory import run_dist
+from deepgnn.graph_engine.trainer.factory import run_dist
 from deepgnn.graph_engine import TextFileSampler, GraphEngineBackend
 from args import init_args  # type: ignore
 from consts import DEFAULT_VOCAB_CHAR_INDEX  # type: ignore

@@ -23,7 +23,7 @@ from ray.train.horovod import HorovodTrainer
 from deepgnn import get_logger
 from deepgnn.pytorch.modeling.base_model import BaseModel
 from deepgnn.pytorch.common import init_common_args
-from deepgnn.trainer.args import init_trainer_args, init_fp16_args
+from deepgnn.graph_engine.trainer.args import init_trainer_args, init_fp16_args
 from deepgnn.graph_engine import create_backend, BackendOptions
 from deepgnn.graph_engine.samplers import GENodeSampler, GEEdgeSampler
 from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset

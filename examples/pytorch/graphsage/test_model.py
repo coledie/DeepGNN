@@ -581,10 +581,7 @@ def setup_module(module):
     if platform.system() == "Windows":
         lib_name = "wrapper.dll"
 
-    os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join(
-        "/home/user/DeepGNN/bazel-bin/src/cc/lib", lib_name
-    )
-
+    os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join(os.path.dirname(__file__), "..", "..", "..", "src", "cc", "lib", lib_name)
 
 from main import init_args, create_model, create_dataset, create_optimizer  # type: ignore
 from deepgnn.trainer.factory import run_dist

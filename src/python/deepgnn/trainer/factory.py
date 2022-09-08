@@ -74,7 +74,7 @@ class DeepGNNTrainingLoop:
         """
         self.args = config["args"]
         self._initialize(
-            config["init_model_fn"], config["init_optimizer_fn"], config["init_dataset_fn"], config["init_eval_dataset_for_training_fn"]
+            config["init_model_fn"], config["init_dataset_fn"], config["init_optimizer_fn"], config["init_eval_dataset_for_training_fn"]
         )
 
         log_telemetry(
@@ -121,22 +121,21 @@ class DeepGNNTrainingLoop:
     def _initialize(
         self,
         init_model_fn: BaseModel,
-        init_optimizer_fn: TorchDeepGNNDataset,  # TODO optimizer fn optional
-        init_dataset_fn: Optional[Optimizer],
+        init_dataset_fn: TorchDeepGNNDataset,
+        init_optimizer_fn: Optional[Optimizer] = None,
         init_eval_dataset_for_training_fn: TorchDeepGNNDataset = None,
     ) -> BaseModel:
         """Initialize all training loop variables."""
         if self.args.trainer == TrainerType.HVD:
             hvd.init()
         torch.manual_seed(self.args.seed)
-        torch.set_num_threads(1)  # Horovod: limit # of CPU threads to be used per worker.
+        torch.set_num_threads(1)
 
         self.logger = get_logger()
 
         self.step = 0
         self.global_step = 0
         self.epochs_trained = 0
-        self.steps_in_epoch_trained = 0
         self.start_time = time.time()
 
         self.rank = 0
@@ -156,6 +155,7 @@ class DeepGNNTrainingLoop:
         self.optimizer = self._init_optimizer(init_optimizer_fn)
         self.dataset = self._init_dataset(init_dataset_fn)
         self.eval_dataset_for_training = self._init_dataset(init_eval_dataset_for_training_fn)
+        self._load_checkpoint()
 
     def _init_model(self, init_model_fn: callable) -> BaseModel:
         model = init_model_fn(self.args)
@@ -164,8 +164,7 @@ class DeepGNNTrainingLoop:
         if self.args.trainer == TrainerType.BASE:
             model = train.torch.prepare_model(model)
         elif self.args.trainer == TrainerType.HVD:
-            # TODO necessary?
-            hvd.broadcast_parameters(model.state_dict(), root_rank=self.rank)
+            assert self.args.train_workers == hvd.size()
 
         if self.args.gpu:
             torch.cuda.set_device(self.local_rank)
@@ -181,7 +180,6 @@ class DeepGNNTrainingLoop:
             print_model(model)
             tally_parameters(model)
 
-        self._load_checkpoint()
         return model
 
     def _init_optimizer(self, init_optimizer_fn: Optimizer) -> Optimizer:
@@ -192,8 +190,6 @@ class DeepGNNTrainingLoop:
             args=self.args, model=self.model, world_size=self.args.train_workers
         )
         if self.args.trainer == TrainerType.HVD:
-            # TODO necessary?
-            #hvd.broadcast_optimizer_state(self.optimizer, root_rank=0)
             compression = (
                 hvd.Compression.fp16 if self.fp16_enabled() else hvd.Compression.none
             )
@@ -206,7 +202,6 @@ class DeepGNNTrainingLoop:
 
         self.lr_scheduler = None
         if self.max_steps > 0:
-            #lr_scaler = hvd.size() if not use_adasum else 1
             num_training_steps = self.max_steps * self.args.num_epochs
             self.lr_scheduler = get_linear_schedule_with_warmup(
                 optimizer,
@@ -234,49 +229,29 @@ class DeepGNNTrainingLoop:
             if issubclass(dataset.sampler_class, (GENodeSampler, GEEdgeSampler))
             else self.args.data_parallel_num
         )
-        if True:
-            dataloader = torch.utils.data.DataLoader(
-                dataset=dataset,
-                num_workers=num_workers,
-                prefetch_factor=self.args.prefetch_factor,
-            )
-        else:
-            # TODO no compatibile with iterable dataset, requires indexing
-            dataset._torch_init_sampler()
-            sampler = torch.utils.data.distributed.DistributedSampler(
-                dataset, num_replicas=hvd.size(), rank=hvd.rank()
-            )
-            dataloader = torch.utils.data.DataLoader(
-                dataset=dataset,
-                num_workers=num_workers,
-                batch_size=self.args.batch_size,
-                #prefetch_factor=self.args.prefetch_factor,
-                sampler=sampler,
-            )
+        dataloader = torch.utils.data.DataLoader(
+            dataset=dataset,
+            num_workers=num_workers,
+            prefetch_factor=self.args.prefetch_factor,
+        )
         return dataloader
 
     def _train(self, model: BaseModel):
         self._init_summary_writer(prefix="train/worker")
         model.train()
 
-        # Continous training from epoch and step saved in checkpoint.
         self.step = self.steps_in_epoch_trained
         for epoch in range(self.epochs_trained, self.args.num_epochs):
-            if hasattr(self, "sampler"):
-                self.sampler.set_epoch(epoch)
             for i, data in enumerate(self.dataset):
-                # Skip trained steps.
                 if i < self.step:
                     continue
-
-                self.train_losses = []  # type: List[float]
-                self.train_metrics = []  # type: List[float]
+                self.train_losses: List[float] = []
+                self.train_metrics: List[float] = []
                 self._increment_step()
                 self._prepare_data(data)
 
                 self.optimizer.zero_grad()
                 loss, pred, label = model(data)
-                # TODO loss caluclation here
                 loss.backward()
                 if self.args.clip_grad:
                     torch.nn.utils.clip_grad_norm_(
@@ -295,8 +270,7 @@ class DeepGNNTrainingLoop:
                 ):
                     self._save_checkpoint(epoch)
 
-                # Calculate training metrics for one batch data.
-                metric = (  # move to model.get_metric(*args)
+                metric = (
                     self.model_unwrapped.compute_metric([pred], [label]).data.item()
                     if self.args.use_per_step_metrics
                     else torch.tensor(0.0)
@@ -372,7 +346,6 @@ class DeepGNNTrainingLoop:
                 if self._should_stop():
                     break
 
-            # Epoch finishes.
             self.step = 0
             if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
                 self._save_checkpoint(epoch + 1)
@@ -387,8 +360,7 @@ class DeepGNNTrainingLoop:
         )
 
         """
-        # Horovod: use train_sampler to determine the number of
-        # examples in this worker's partition.
+        # Horovod: use train_sampler to determine the number of examples in this worker's partition.
         print(
             "Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}".format(
                 epoch,
@@ -559,17 +531,19 @@ class DeepGNNTrainingLoop:
 
             init_ckpt = torch.load(ckpt_path, map_location="cpu")
             self.epochs_trained = init_ckpt["epoch"]
-            self.steps_in_epoch_trained = init_ckpt["step"]
+            self.step = init_ckpt["step"]
 
-            # Only worker with rank 0 loads state dict.
             if self.rank == 0:
                 self.model.load_state_dict(init_ckpt["state_dict"])
                 self.logger.info(
                     self._wrap_log(
                         f"Loaded initial checkpoint: {ckpt_path},"
-                        f" trained epochs: {self.epochs_trained}, steps: {self.steps_in_epoch_trained}"
+                        f" trained epochs: {self.epochs_trained}, steps: {self.step}"
                     )
                 )
+                if self.args.trainer == TrainerType.HVD:
+                    hvd.broadcast_parameters(self.model.state_dict(), root_rank=self.rank)
+                    hvd.broadcast_optimizer_state(self.optimizer, root_rank=self.rank)
 
             del init_ckpt
 
@@ -636,14 +610,11 @@ def run_dist(
         "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
     }
 
-    # TODO multi worker, each training worker should be looking at different partition of whole dataset
-    # TODO add trainer worker rank value
-    # TODO DeepGNNTrainingLooop init - start server?
     try:
         ray.init(include_dashboard=False)
 
         if args.trainer == TrainerType.BASE:
-            if False:# TODO tf:
+            if False:
                 trainer_class = TensorflowTrainer
             else:
                 trainer_class = TorchTrainer

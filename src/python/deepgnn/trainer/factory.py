@@ -8,11 +8,11 @@ from typing import Optional, Dict, Callable, List, Tuple, IO
 import numpy as np
 import torch
 from torch.optim import Optimizer
-from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.tensorboard import SummaryWriter
 import torch.utils.data.distributed
 import horovod.torch as hvd
 
+import ray
 from ray import train
 from ray.air import session
 from ray.air.config import ScalingConfig
@@ -601,15 +601,9 @@ def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = 
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(allow_abbrev=False)
 
-    # Initialize common parameters, including model, dataset, optimizer etc.
     init_common_args(parser)
-
-    # Initialize trainer paramaters.
     init_trainer_args(parser)
-
-    # Initialize fp16 related paramaters.
     init_fp16_args(parser)
-
     if init_arg_fn is not None:
         init_arg_fn(parser)
 
@@ -634,13 +628,7 @@ def run_dist(
     init_eval_dataset_for_training_fn: Optional[Callable] = None,
 ):
     """Public api."""
-    import ray
-
-    ray.init(
-        num_cpus=4, num_gpus=0, include_dashboard=False  # Need 2x num_workers
-    )  # TODO how to set how many cpus each trainer is allocated
     args = get_args(init_args_fn, run_args)
-
     config = {
         "init_model_fn": init_model_fn,
         "init_dataset_fn": init_dataset_fn,
@@ -654,7 +642,11 @@ def run_dist(
     # TODO add trainer worker rank value
     # TODO DeepGNNTrainingLooop init - start server?
     try:
-        training_loop = DeepGNNTrainingLoop()  # DeepGNNTrainingLoop
+        ray.init(
+            num_cpus=4, num_gpus=0, include_dashboard=False  # Need 2x num_workers
+        )  # TODO how to set how many cpus each trainer is allocated
+        training_loop = DeepGNNTrainingLoop()
+
         if args.trainer == TrainerType.BASE:
             if False:# TODO tf:
                 trainer_class = TensorflowTrainer
@@ -682,5 +674,6 @@ def run_dist(
     except Exception as e:
         ray.shutdown()
         raise e
+
     ray.shutdown()
     return results

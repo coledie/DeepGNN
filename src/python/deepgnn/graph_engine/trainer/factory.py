@@ -49,78 +49,7 @@ from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
 from deepgnn.graph_engine.adl_uploader import AdlDataWriter
 
 
-class DeepGNNTrainingLoop:
-    """
-    Pytorch trainer controls the workflow of training/evaluation/inference.
-
-    - Implementation in this class only works for sinle worker FP32 training requirement.
-    - For FP16 mixed precision training, please use FP16Trainer.
-    - For distributed training, please use DDPTrainer or HVDTrainer.
-    """
-
-    def __init__(self):
-        """Initialize trainer."""
-
-    def run(self, config):
-        """
-        Perform training/evaluation/inference according to training mode set in constructor.
-
-        Args:
-            model: target model.
-            dataset: dataset for training, evaluation or inference.
-            optimizer: optimizer for training.
-            eval_during_train_dataset: optional dataset for evaluation
-                during training.
-        """
-        self.args = config["args"]
-        self._initialize(
-            config["init_model_fn"],
-            config["init_dataset_fn"],
-            config["init_optimizer_fn"],
-            config["init_eval_dataset_for_training_fn"],
-        )
-
-        log_telemetry(
-            self.logger,
-            f"Training worker started. Model: {self.model_name}.",
-            LOG_PROPS_EVENT_START_WORKER,
-            f"{self.args.mode}",
-            self.model_name,
-            self.args.user_name,
-            self.args.job_id,
-            self.rank,
-            self.args.train_workers,
-            LOG_PROPS_PLATFORM_PYTORCH,
-        )
-
-        result = None
-        if self.args.mode == TrainMode.TRAIN:
-            assert self.optimizer is not None
-            self._train(self.model)
-        elif self.args.mode == TrainMode.EVALUATE:
-            result, loss = self._evaluate(self.model)
-        elif self.args.mode == TrainMode.INFERENCE:
-            self._inference(self.model)
-        else:
-            raise RuntimeError(f"Unsupported TrainMode:{self.args.mode}")
-
-        log_telemetry(
-            self.logger,
-            f"Training worker finished. Model: {self.model_name}.",
-            LOG_PROPS_EVENT_END_WORKER,
-            f"{self.args.mode}",
-            self.model_name,
-            self.args.user_name,
-            self.args.job_id,
-            self.rank,
-            self.args.train_workers,
-            LOG_PROPS_PLATFORM_PYTORCH,
-        )
-        if self.args.gpu:
-            self.logger.info(self._wrap_log(dump_gpu_memory()))
-
-        return result
-
+class DeepGNNTrainingLoopImpl:
     def _initialize(
         self,
         init_model_fn: Callable[..., BaseModel],
@@ -200,7 +129,7 @@ class DeepGNNTrainingLoop:
         )
         if self.args.trainer == TrainerType.HVD:
             compression = (
-                hvd.Compression.fp16 if self.fp16_enabled() else hvd.Compression.none
+                hvd.Compression.fp16 if self._fp16_enabled() else hvd.Compression.none
             )
             optimizer = hvd.DistributedOptimizer(
                 optimizer,
@@ -246,6 +175,159 @@ class DeepGNNTrainingLoop:
             prefetch_factor=self.args.prefetch_factor,
         )
         return dataloader
+
+    def _fp16_enabled(self) -> bool:
+        """Check if trainer should use fp16 mode."""
+        return self.args.gpu and self.args.fp16 != FP16_NO
+
+    def _increment_step(self):
+        self.step += 1
+        self.global_step += 1
+
+    def _check_duration(self) -> float:
+        duration = time.time() - self.start_time
+        self.start_time = time.time()
+        return duration
+
+    def _save_checkpoint(self, epoch: int, save_path: Optional[str] = None):
+        # Don't save for last step to avoid duplication with ckpt after epoch finished.
+        if save_path is None:
+            if self.max_steps > 0 and self.step == self.max_steps:
+                return
+
+            save_path = os.path.join(
+                f"{self.args.save_path}",
+                f"{PREFIX_CHECKPOINT}-{epoch:03}-{self.step:06}.pt",
+            )
+        torch.save(
+            {"state_dict": self.model.state_dict(), "epoch": epoch, "step": self.step},
+            save_path,
+        )
+        self.logger.info(self._wrap_log(f"Saved checkpoint to {save_path}."))
+        rotate_checkpoints(self.args.save_path, self.args.max_saved_ckpts)
+
+    def _load_checkpoint(self, ckpt_path: str = None):
+        if not ckpt_path:
+            # Search and sort checkpoints from model path.
+            ckpts = get_sorted_checkpoints(self.args.model_dir)
+            ckpt_path = ckpts[-1] if len(ckpts) > 0 else None
+
+        if ckpt_path is not None:
+
+            init_ckpt = torch.load(ckpt_path, map_location="cpu")
+            self.epochs_trained = init_ckpt["epoch"]
+            self.step = init_ckpt["step"]
+
+            if self.rank == 0:
+                self.model.load_state_dict(init_ckpt["state_dict"])
+                self.logger.info(
+                    self._wrap_log(
+                        f"Loaded initial checkpoint: {ckpt_path},"
+                        f" trained epochs: {self.epochs_trained}, steps: {self.step}"
+                    )
+                )
+                if self.args.trainer == TrainerType.HVD:
+                    hvd.broadcast_parameters(
+                        self.model.state_dict(), root_rank=self.rank
+                    )
+                    hvd.broadcast_optimizer_state(self.optimizer, root_rank=self.rank)
+
+            del init_ckpt
+
+    def _init_summary_writer(self, prefix: str):
+        self.summary_writer = SummaryWriter(
+            os.path.join(self.args.metric_dir, f"{prefix}-{self.rank}")
+        )
+
+    def _get_embedding_writer(self) -> IO[str]:
+        embed_path = os.path.join(
+            self.args.save_path, f"{PREFIX_EMBEDDING}-{self.rank}"
+        )
+        if self.args.enable_adl_uploader:
+            uploader = AdlDataWriter(
+                process_num=self.args.uploader_process_num,
+                threads_per_process=self.args.uploader_threads_num,
+                queue_size=200,
+                store_name=self.args.uploader_store_name,
+                file_path_prefix=embed_path,
+            )
+
+            return uploader  # type: ignore
+        return open(embed_path + ".tsv", "w", encoding="utf-8")
+
+
+class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
+    """
+    Pytorch trainer controls the workflow of training/evaluation/inference.
+
+    - Implementation in this class only works for sinle worker FP32 training requirement.
+    - For FP16 mixed precision training, please use FP16Trainer.
+    - For distributed training, please use DDPTrainer or HVDTrainer.
+    """
+
+    def __init__(self):
+        """Initialize trainer."""
+
+    def run(self, config):
+        """
+        Perform training/evaluation/inference according to training mode set in constructor.
+
+        Args:
+            model: target model.
+            dataset: dataset for training, evaluation or inference.
+            optimizer: optimizer for training.
+            eval_during_train_dataset: optional dataset for evaluation
+                during training.
+        """
+        super().__init__()
+        self.args = config["args"]
+        self._initialize(
+            config["init_model_fn"],
+            config["init_dataset_fn"],
+            config["init_optimizer_fn"],
+            config["init_eval_dataset_for_training_fn"],
+        )
+
+        log_telemetry(
+            self.logger,
+            f"Training worker started. Model: {self.model_name}.",
+            LOG_PROPS_EVENT_START_WORKER,
+            f"{self.args.mode}",
+            self.model_name,
+            self.args.user_name,
+            self.args.job_id,
+            self.rank,
+            self.args.train_workers,
+            LOG_PROPS_PLATFORM_PYTORCH,
+        )
+
+        result = None
+        if self.args.mode == TrainMode.TRAIN:
+            assert self.optimizer is not None
+            self._train(self.model)
+        elif self.args.mode == TrainMode.EVALUATE:
+            result, loss = self._evaluate(self.model)
+        elif self.args.mode == TrainMode.INFERENCE:
+            self._inference(self.model)
+        else:
+            raise RuntimeError(f"Unsupported TrainMode:{self.args.mode}")
+
+        log_telemetry(
+            self.logger,
+            f"Training worker finished. Model: {self.model_name}.",
+            LOG_PROPS_EVENT_END_WORKER,
+            f"{self.args.mode}",
+            self.model_name,
+            self.args.user_name,
+            self.args.job_id,
+            self.rank,
+            self.args.train_workers,
+            LOG_PROPS_PLATFORM_PYTORCH,
+        )
+        if self.args.gpu:
+            self.logger.info(self._wrap_log(dump_gpu_memory()))
+
+        return result
 
     def _train(self, model: BaseModel):
         self._init_summary_writer(prefix="train/worker")
@@ -489,21 +571,8 @@ class DeepGNNTrainingLoop:
                     if self._should_stop():
                         break
 
-    def _increment_step(self):
-        self.step += 1
-        self.global_step += 1
-
     def _should_stop(self) -> bool:
         return self.max_steps > 0 and self.step >= self.max_steps
-
-    def fp16_enabled(self) -> bool:
-        """Check if trainer should use fp16 mode."""
-        return self.args.gpu and self.args.fp16 != FP16_NO
-
-    def _check_duration(self) -> float:
-        duration = time.time() - self.start_time
-        self.start_time = time.time()
-        return duration
 
     def _prepare_data(self, data: Dict):
         if self.args.gpu:
@@ -511,72 +580,6 @@ class DeepGNNTrainingLoop:
 
     def _wrap_log(self, content: str) -> str:
         return f"[{self.args.train_workers},{self.rank}] {content}"
-
-    def _save_checkpoint(self, epoch: int, save_path: Optional[str] = None):
-        # Don't save for last step to avoid duplication with ckpt after epoch finished.
-        if save_path is None:
-            if self.max_steps > 0 and self.step == self.max_steps:
-                return
-
-            save_path = os.path.join(
-                f"{self.args.save_path}",
-                f"{PREFIX_CHECKPOINT}-{epoch:03}-{self.step:06}.pt",
-            )
-        torch.save(
-            {"state_dict": self.model.state_dict(), "epoch": epoch, "step": self.step},
-            save_path,
-        )
-        self.logger.info(self._wrap_log(f"Saved checkpoint to {save_path}."))
-        rotate_checkpoints(self.args.save_path, self.args.max_saved_ckpts)
-
-    def _load_checkpoint(self, ckpt_path: str = None):
-        if not ckpt_path:
-            # Search and sort checkpoints from model path.
-            ckpts = get_sorted_checkpoints(self.args.model_dir)
-            ckpt_path = ckpts[-1] if len(ckpts) > 0 else None
-
-        if ckpt_path is not None:
-
-            init_ckpt = torch.load(ckpt_path, map_location="cpu")
-            self.epochs_trained = init_ckpt["epoch"]
-            self.step = init_ckpt["step"]
-
-            if self.rank == 0:
-                self.model.load_state_dict(init_ckpt["state_dict"])
-                self.logger.info(
-                    self._wrap_log(
-                        f"Loaded initial checkpoint: {ckpt_path},"
-                        f" trained epochs: {self.epochs_trained}, steps: {self.step}"
-                    )
-                )
-                if self.args.trainer == TrainerType.HVD:
-                    hvd.broadcast_parameters(
-                        self.model.state_dict(), root_rank=self.rank
-                    )
-                    hvd.broadcast_optimizer_state(self.optimizer, root_rank=self.rank)
-
-            del init_ckpt
-
-    def _init_summary_writer(self, prefix: str):
-        self.summary_writer = SummaryWriter(
-            os.path.join(self.args.metric_dir, f"{prefix}-{self.rank}")
-        )
-
-    def _get_embedding_writer(self) -> IO[str]:
-        embed_path = os.path.join(
-            self.args.save_path, f"{PREFIX_EMBEDDING}-{self.rank}"
-        )
-        if self.args.enable_adl_uploader:
-            uploader = AdlDataWriter(
-                process_num=self.args.uploader_process_num,
-                threads_per_process=self.args.uploader_threads_num,
-                queue_size=200,
-                store_name=self.args.uploader_store_name,
-                file_path_prefix=embed_path,
-            )
-
-            return uploader  # type: ignore
-        return open(embed_path + ".tsv", "w", encoding="utf-8")
 
 
 def get_args(init_arg_fn: Optional[Callable] = None, run_args: Optional[List] = None):
@@ -643,6 +646,7 @@ def run_dist(
             trainer_class = None
 
         training_loop = training_loop_class()
+        # TODO if training_loo_class is base trainer, avoid ray, opther options
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,

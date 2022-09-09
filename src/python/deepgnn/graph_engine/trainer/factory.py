@@ -7,6 +7,7 @@ from typing import Optional, Dict, Callable, List, Tuple, IO, Type
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch.optim import Optimizer
 from torch.utils.tensorboard import SummaryWriter
 import torch.utils.data.distributed
@@ -74,6 +75,9 @@ class DeepGNNTrainingLoopImpl:
 
         self.rank = 0
         self.local_rank = 0
+        if self.args.trainer == TrainerType.DDP:
+            self.rank = dist.get_rank()
+            self.local_rank = self.args.local_rank  # TODO
         if self.args.trainer == TrainerType.HVD:
             self.rank = hvd.rank()
             self.local_rank = hvd.local_rank()
@@ -97,13 +101,13 @@ class DeepGNNTrainingLoopImpl:
         model = init_model_fn(self.args)
         self.model_name = type(model).__name__
         self.model_unwrapped = model
-        if self.args.trainer == TrainerType.BASE:
+        if self.args.trainer == TrainerType.DDP:
             model = train.torch.prepare_model(model)
         elif self.args.trainer == TrainerType.HVD:
             assert self.args.train_workers == hvd.size()
 
         if self.args.gpu:
-            torch.cuda.set_device(self.local_rank)
+            torch.cuda.set_device(self.local_rank)  # TODO train.torch.get_device()?
             torch.cuda.manual_seed(self.args.seed)
             model.cuda()
 
@@ -226,6 +230,7 @@ class DeepGNNTrainingLoopImpl:
                         f" trained epochs: {self.epochs_trained}, steps: {self.step}"
                     )
                 )
+                # Can skip broadcasting args fo DDP
                 if self.args.trainer == TrainerType.HVD:
                     hvd.broadcast_parameters(
                         self.model.state_dict(), root_rank=self.rank
@@ -442,7 +447,8 @@ class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
             if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
                 self._save_checkpoint(epoch + 1)
 
-        session.report(dict(loss=loss))
+        if self.args.trainer != TrainerType.BASE:
+            session.report(dict(loss=loss))
         if self.rank == 0:
             save_path = os.path.join(
                 f"{self.args.save_path}",
@@ -529,6 +535,24 @@ class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
             )
             eval_loss = np.mean(eval_losses) if len(eval_losses) > 0 else 0
             eval_loss = torch.tensor(eval_loss)
+        # TODO Replace both of these with ray session usage?
+        """
+        # DDP eval metric
+        metric, loss = super()._evaluate(model)
+        metric = self._allreduce(metric)
+        loss = self._allreduce(loss)
+        self.logger.info(
+            self._wrap_log(
+                f"AllReduced {self.model.metric_name()}: {metric:.4f}; loss: {loss:.4f};"
+            )
+        )
+        return metric, loss
+        def _allreduce(self, metric: torch.Tensor) -> torch.Tensor:
+            if self.args.gpu:
+                metric = metric.cuda()
+            dist.all_reduce(metric, op=dist.ReduceOp.SUM)
+            return metric / self.world_size
+        """
         """
         # HOROVOD eval metric
         metric, loss = super()._evaluate(model)
@@ -624,29 +648,33 @@ def run_dist(
         "init_eval_dataset_for_training_fn": init_eval_dataset_for_training_fn,
     }
 
+    if args.trainer == TrainerType.BASE:
+        if False:
+            trainer_class = TensorflowTrainer
+        else:
+            trainer_class = None
+            assert args.train_workers == 1, "Multi worker training not supported on torch base trainer!"
+    elif args.trainer == TrainerType.DDP:
+        trainer_class = TorchTrainer
+    elif args.trainer == TrainerType.HVD:
+        trainer_class = HorovodTrainer
+    elif args.trainer == TrainerType.PS:
+        if False:
+            raise
+        trainer_class = None
+    elif args.trainer == TrainerType.MULTINODE:
+        if False:
+            raise
+        trainer_class = None
+
+    training_loop = training_loop_class()
+    # TODO if training_loo_class is base trainer, avoid ray, opther options
+
+    if trainer_class is None:
+        return training_loop.run(config)
+
     try:
         ray.init(include_dashboard=False)
-
-        if args.trainer == TrainerType.BASE:
-            if False:
-                trainer_class = TensorflowTrainer
-            else:
-                trainer_class = TorchTrainer
-        elif args.trainer == TrainerType.HVD:
-            trainer_class = HorovodTrainer
-        elif args.trainer == TrainerType.DDP:
-            trainer_class = None
-        elif args.trainer == TrainerType.PS:
-            if False:
-                raise
-            trainer_class = None
-        elif args.trainer == TrainerType.MULTINODE:
-            if False:
-                raise
-            trainer_class = None
-
-        training_loop = training_loop_class()
-        # TODO if training_loo_class is base trainer, avoid ray, opther options
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,

@@ -6,6 +6,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Torch and TF Trainer objects replaced with user facing DeepGNNTrainingLoop with customizable training loop and implemntation uses Ray to start and manage cluster. Base trainer calls training loop directly.
+
 ### Added
 - Breaking. Added version checks for binary data. Requires to convert graph data or add v1 at the top of meta files.
 

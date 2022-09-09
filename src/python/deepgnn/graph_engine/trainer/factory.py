@@ -202,8 +202,8 @@ class DeepGNNTrainingLoop:
             compression = (
                 hvd.Compression.fp16 if self.fp16_enabled() else hvd.Compression.none
             )
-            self.optimizer = hvd.DistributedOptimizer(
-                self.optimizer,
+            optimizer = hvd.DistributedOptimizer(
+                optimizer,
                 named_parameters=self.model.named_parameters(),
                 compression=compression,
                 op=hvd.Average,
@@ -359,15 +359,14 @@ class DeepGNNTrainingLoop:
             self.step = 0
             if self.rank == 0 and epoch % self.args.save_ckpt_by_epochs == 0:
                 self._save_checkpoint(epoch + 1)
+
         session.report(dict(loss=loss))
-        save_path = os.path.join(
-            f"{self.args.save_path}",
-            f"{PREFIX_CHECKPOINT}.pt",
-        )
-        torch.save(
-            {"state_dict": self.model.state_dict(), "epoch": epoch, "step": self.step},
-            save_path,
-        )
+        if self.rank == 0:
+            save_path = os.path.join(
+                f"{self.args.save_path}",
+                f"{PREFIX_CHECKPOINT}.pt",
+            )
+            self._save_checkpoint(epoch, save_path=save_path)
 
         """
         # Horovod: use train_sampler to determine the number of examples in this worker's partition.
@@ -513,15 +512,16 @@ class DeepGNNTrainingLoop:
     def _wrap_log(self, content: str) -> str:
         return f"[{self.args.train_workers},{self.rank}] {content}"
 
-    def _save_checkpoint(self, epoch: int):
+    def _save_checkpoint(self, epoch: int, save_path: Optional[str] = None):
         # Don't save for last step to avoid duplication with ckpt after epoch finished.
-        if self.max_steps > 0 and self.step == self.max_steps:
-            return
+        if save_path is None:
+            if self.max_steps > 0 and self.step == self.max_steps:
+                return
 
-        save_path = os.path.join(
-            f"{self.args.save_path}",
-            f"{PREFIX_CHECKPOINT}-{epoch:03}-{self.step:06}.pt",
-        )
+            save_path = os.path.join(
+                f"{self.args.save_path}",
+                f"{PREFIX_CHECKPOINT}-{epoch:03}-{self.step:06}.pt",
+            )
         torch.save(
             {"state_dict": self.model.state_dict(), "epoch": epoch, "step": self.step},
             save_path,

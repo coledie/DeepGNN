@@ -38,7 +38,6 @@ from deepgnn.pytorch.common.utils import (
     get_sorted_checkpoints,
     to_cuda,
 )
-from deepgnn.pytorch.common.consts import FP16_NO
 from deepgnn import (
     log_telemetry,
     TrainerType,
@@ -53,12 +52,19 @@ from deepgnn.graph_engine.adl_uploader import AdlDataWriter
 
 try:
     import apex  # type: ignore
+
     is_apex_available = True
 except ImportError:
     is_apex_available = False
 
 
 class DeepGNNTrainingLoopImpl:
+    """DeepGNN Training loop base implementation, not user facing."""
+
+    def __init__(self):
+        """Initialize training loop impl."""
+        self.args = argparse.Namespace()
+
     def _initialize(
         self,
         init_model_fn: Callable[..., BaseModel],
@@ -114,7 +120,15 @@ class DeepGNNTrainingLoopImpl:
         self.model_name = type(model).__name__
         self.model_unwrapped = model
         if self.args.trainer != TrainerType.BASE:
-            model = train.torch.prepare_model(model, wrap_ddp=self.args.trainer == TrainerType.DDP)
+            model = train.torch.prepare_model(
+                model,
+                wrap_ddp=self.args.trainer == TrainerType.DDP,
+                ddp_kwargs={
+                    "device_ids": [self.local_rank] if self.args.gpu else None,
+                    "output_device": self.local_rank if self.args.gpu else None,
+                    "find_unused_parameters": True,
+                },
+            )
         if self.args.trainer == TrainerType.HVD:
             assert self.args.train_workers == hvd.size()
 
@@ -139,7 +153,9 @@ class DeepGNNTrainingLoopImpl:
     ) -> Optimizer:
         if not init_optimizer_fn:
             if self.args.fp16 == FP16_APEX:
-                self.model = apex.amp.initialize(self.model, opt_level=self.args.apex_opt_level)
+                self.model = apex.amp.initialize(
+                    self.model, opt_level=self.args.apex_opt_level
+                )
             return None
 
         optimizer = init_optimizer_fn(
@@ -391,7 +407,8 @@ class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
 
                     if self.args.clip_grad:
                         torch.nn.utils.clip_grad_norm_(
-                            apex.amp.master_params(self.optimizer), self.args.grad_max_norm
+                            apex.amp.master_params(self.optimizer),
+                            self.args.grad_max_norm,
                         )
                 else:
                     raise ValueError("")
@@ -512,7 +529,7 @@ class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
         )
         """
 
-        '''
+        """
     # TODO
     def _evaluate_one_step_internal(
         self, model: BaseModel, data: Dict
@@ -529,8 +546,7 @@ class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
             with torch.cuda.amp.autocast():
                 return super()._inference_one_step_internal(model, data)
         return super()._inference_one_step_internal(model, data)
-        '''
-
+        """
 
     def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.args.mode != TrainMode.TRAIN:
@@ -716,7 +732,9 @@ def run_dist(
             trainer_class = TensorflowTrainer
         else:
             trainer_class = None
-            assert args.train_workers == 1, "Multi worker training not supported on torch base trainer!"
+            assert (
+                args.train_workers == 1
+            ), "Multi worker training not supported on torch base trainer!"
     elif args.trainer == TrainerType.DDP:
         trainer_class = TorchTrainer
     elif args.trainer == TrainerType.HVD:
@@ -737,7 +755,7 @@ def run_dist(
         return training_loop.run(config)
 
     try:
-        ray.init(include_dashboard=False)
+        ray.init(include_dashboard=False)  # cpu/gpu_per_worker
         trainer = trainer_class(
             training_loop.run,
             train_loop_config=config,

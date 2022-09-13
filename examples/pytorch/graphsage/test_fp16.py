@@ -49,7 +49,10 @@ def setup_module(module):
     if platform.system() == "Windows":
         lib_name = "wrapper.dll"
 
-    os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join(os.path.dirname(__file__), "..", "..", "..", "src", "cc", "lib", lib_name)
+    os.environ[lib._SNARK_LIB_PATH_ENV_KEY] = os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "src", "cc", "lib", lib_name
+    )
+
 
 from main import init_args, create_model, create_dataset, create_optimizer  # type: ignore
 from deepgnn.graph_engine.trainer.factory import run_dist
@@ -117,10 +120,10 @@ def test_graphsage_ppi_ddp_amp_trainer(mock_graph):
     it = iter(trainloader)
     loss, pred, label = graphsage(it.next())
 
-    #val_output_ref = graphsage.get_score(it.next())
-    #val_labels = g.node_features(
+    # val_output_ref = graphsage.get_score(it.next())
+    # val_labels = g.node_features(
     #    val_ref, np.array([[label_idx, label_dim]]), FeatureType.FLOAT
-    #).argmax(1)
+    # ).argmax(1)
     f1_ref = graphsage.compute_metric([pred], [label])
 
     assert 0.5 < f1_ref and f1_ref < 0.6
@@ -188,10 +191,10 @@ def test_graphsage_ppi_hvd_amp_trainer(mock_graph):
     it = iter(trainloader)
     loss, pred, label = graphsage(it.next())
 
-    #val_output_ref = graphsage.get_score(it.next())
-    #val_labels = g.node_features(
+    # val_output_ref = graphsage.get_score(it.next())
+    # val_labels = g.node_features(
     #    val_ref, np.array([[label_idx, label_dim]]), FeatureType.FLOAT
-    #).argmax(1)
+    # ).argmax(1)
     f1_ref = graphsage.compute_metric([pred], [label])
 
     assert 0.5 < f1_ref and f1_ref < 0.6

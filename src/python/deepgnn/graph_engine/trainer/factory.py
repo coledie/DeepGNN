@@ -27,6 +27,7 @@ from deepgnn.pytorch.common import init_common_args
 from deepgnn.graph_engine.trainer.args import init_trainer_args, init_fp16_args
 from deepgnn.graph_engine import create_backend, BackendOptions
 from deepgnn.graph_engine.samplers import GENodeSampler, GEEdgeSampler
+from deepgnn.pytorch.common.consts import FP16_APEX, FP16_AMP, FP16_NO
 from deepgnn.pytorch.common.dataset import TorchDeepGNNDataset
 from deepgnn.pytorch.common.consts import PREFIX_CHECKPOINT, PREFIX_EMBEDDING
 from deepgnn.pytorch.common.utils import (
@@ -50,6 +51,13 @@ from deepgnn.pytorch.common.optimization import get_linear_schedule_with_warmup
 from deepgnn.graph_engine.adl_uploader import AdlDataWriter
 
 
+try:
+    import apex  # type: ignore
+    is_apex_available = True
+except ImportError:
+    is_apex_available = False
+
+
 class DeepGNNTrainingLoopImpl:
     def _initialize(
         self,
@@ -61,6 +69,10 @@ class DeepGNNTrainingLoopImpl:
         ] = None,
     ):
         """Initialize all training loop variables for the current training worker."""
+        assert self.args.fp16 != FP16_APEX or is_apex_available
+        if self.args.trainer != TrainerType.BASE:
+            train.torch.accelerate(amp=self.args.fp16 == FP16_AMP)
+
         if self.args.trainer == TrainerType.HVD:
             hvd.init()
         torch.manual_seed(self.args.seed)
@@ -101,9 +113,9 @@ class DeepGNNTrainingLoopImpl:
         model = init_model_fn(self.args)
         self.model_name = type(model).__name__
         self.model_unwrapped = model
-        if self.args.trainer == TrainerType.DDP:
-            model = train.torch.prepare_model(model)
-        elif self.args.trainer == TrainerType.HVD:
+        if self.args.trainer != TrainerType.BASE:
+            model = train.torch.prepare_model(model, wrap_ddp=self.args.trainer == TrainerType.DDP)
+        if self.args.trainer == TrainerType.HVD:
             assert self.args.train_workers == hvd.size()
 
         if self.args.gpu:
@@ -126,6 +138,8 @@ class DeepGNNTrainingLoopImpl:
         self, init_optimizer_fn: Optional[Callable[..., Optimizer]]
     ) -> Optimizer:
         if not init_optimizer_fn:
+            if self.args.fp16 == FP16_APEX:
+                self.model = apex.amp.initialize(self.model, opt_level=self.args.apex_opt_level)
             return None
 
         optimizer = init_optimizer_fn(
@@ -141,6 +155,8 @@ class DeepGNNTrainingLoopImpl:
                 compression=compression,
                 op=hvd.Average,
             )
+        if self.args.trainer != TrainerType.BASE:
+            optimizer = train.torch.prepare_optimizer(optimizer)
 
         self.lr_scheduler = None
         if self.max_steps > 0:
@@ -150,6 +166,14 @@ class DeepGNNTrainingLoopImpl:
                 num_warmup_steps=self.args.warmup * num_training_steps,
                 num_training_steps=num_training_steps,
             )
+
+        if self.args.fp16 == FP16_AMP:
+            self.grad_scaler = torch.cuda.amp.GradScaler()
+        elif self.args.fp16 == FP16_APEX:
+            self.model, optimizer = apex.amp.initialize(
+                self.model, optimizer, opt_level=self.args.apex_opt_level
+            )
+
         return optimizer
 
     def _init_dataset(
@@ -349,12 +373,31 @@ class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
 
                 self.optimizer.zero_grad()
                 loss, pred, label = model(data)
-                loss.backward()
-                if self.args.clip_grad:
-                    torch.nn.utils.clip_grad_norm_(
-                        model.parameters(), self.args.grad_max_norm
-                    )
+
+                if self.args.fp16 == FP16_NO or self.args.fp16 == FP16_AMP:
+                    if self.args.trainer == TrainerType.BASE:
+                        loss.backward()
+                    else:
+                        train.torch.backward(loss)
+                    if self.args.clip_grad:
+                        # TODO shouold not use AMP and clip together else self.grad_scaler.unscale_(self.optimizer)
+
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.args.grad_max_norm
+                        )
+                elif self.args.fp16 == FP16_APEX:
+                    with apex.amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                        train.torch.backward(scaled_loss)
+
+                    if self.args.clip_grad:
+                        torch.nn.utils.clip_grad_norm_(
+                            apex.amp.master_params(self.optimizer), self.args.grad_max_norm
+                        )
+                else:
+                    raise ValueError("")
+
                 self.optimizer.step()
+
                 self.train_losses.append(loss.data.item())
 
                 if self.lr_scheduler:
@@ -468,6 +511,26 @@ class DeepGNNTrainingLoop(DeepGNNTrainingLoopImpl):
             )
         )
         """
+
+        '''
+    # TODO
+    def _evaluate_one_step_internal(
+        self, model: BaseModel, data: Dict
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.args.gpu and self.args.fp16 == FP16_AMP:
+            with torch.cuda.amp.autocast():
+                return super()._evaluate_one_step_internal(model, data)
+        return super()._evaluate_one_step_internal(model, data)
+
+    def _inference_one_step_internal(
+        self, model: BaseModel, data: Dict
+    ) -> torch.Tensor:
+        if self.args.gpu and self.args.fp16 == FP16_AMP:
+            with torch.cuda.amp.autocast():
+                return super()._inference_one_step_internal(model, data)
+        return super()._inference_one_step_internal(model, data)
+        '''
+
 
     def _evaluate(self, model: BaseModel) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.args.mode != TrainMode.TRAIN:

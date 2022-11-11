@@ -96,7 +96,7 @@ def create_dataset(
             sampler_class=GENodeSampler,
             backend=backend,
             sample_num=args.max_id,
-            num_workers=world_size,
+            num_workers=2,
             worker_index=rank,
             node_types=np.array([args.node_type], dtype=np.int32),
             batch_size=args.batch_size,

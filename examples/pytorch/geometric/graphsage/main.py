@@ -63,8 +63,8 @@ def create_model(args: argparse.Namespace):
 
 def create_dataset(
     args: argparse.Namespace,
-    graph: Graph,
-    model: BaseModel,
+    graph: Graph = None,
+    model: BaseModel = None,
     rank: int = 0,
     world_size: int = 1,
     backend: GraphEngineBackend = None,
@@ -73,7 +73,7 @@ def create_dataset(
         return TorchDeepGNNDataset(
             sampler_class=CSVNodeSampler,
             backend=backend,
-            num_workers=world_size,
+            num_workers=1,
             worker_index=rank,
             batch_size=args.batch_size,
             sample_file=args.sample_file,
@@ -86,7 +86,7 @@ def create_dataset(
             sampler_class=GENodeSampler,
             backend=backend,
             sample_num=args.max_id,
-            num_workers=world_size,
+            num_workers=1,
             worker_index=rank,
             node_types=np.array([args.node_type], dtype=np.int32),
             batch_size=args.batch_size,

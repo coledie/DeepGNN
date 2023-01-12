@@ -20,8 +20,8 @@ rm -rf $MODEL_DIR
 ### ===== training =======
 python ${DIR_NAME}/main.py  \
 --data_dir $GRAPH --mode train --seed 123 \
---backend snark --graph_type local --converter skip \
---batch_size 512 --learning_rate 0.005 --num_epochs 5 \
+--backend snark --graph_type remote --converter skip \
+--batch_size 256 --learning_rate 0.005 --num_epochs 5 \
 --sample_file /tmp/cora/train.nodes --node_type 0 \
 --model_dir $MODEL_DIR --metric_dir $MODEL_DIR --save_path $MODEL_DIR \
 --eval_file /tmp/cora/test.nodes --eval_during_train_by_steps 1 \

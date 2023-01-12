@@ -100,7 +100,7 @@ def train_func(config: Dict):
     )
     dataset = TorchDeepGNNDataset(
         sampler_class=GENodeSampler,
-        backend=backend,
+        backend=backend,#type("Backend", (object,), {"graph": cl})(),  # type: ignore
         query_fn=model.q.query_training,
         prefetch_queue_size=2,
         prefetch_worker_size=2,
@@ -114,7 +114,7 @@ def train_func(config: Dict):
     )
     dataset = torch.utils.data.DataLoader(
         dataset=dataset,
-        num_workers=6,
+        num_workers=2,
     )
     for epoch in range(epochs_trained, args.num_epochs):
         scores = []

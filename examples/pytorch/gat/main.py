@@ -99,7 +99,7 @@ def train_func(config: Dict):
         BackendOptions(args), is_leader=(session.get_world_rank() == 0)
     )
     dataset = TorchDeepGNNDataset(
-        sampler_class=FileNodeSampler,
+        sampler_class=GENodeSampler,
         backend=backend,
         query_fn=model.q.query_training,
         prefetch_queue_size=2,
@@ -110,16 +110,19 @@ def train_func(config: Dict):
         drop_last=True,
         worker_index=session.get_world_rank(),
         num_workers=session.get_world_size(),
+        node_types=np.array([0]),
     )
     dataset = torch.utils.data.DataLoader(
         dataset=dataset,
-        num_workers=0,
+        num_workers=2,
     )
     for epoch in range(epochs_trained, args.num_epochs):
         scores = []
         labels = []
         losses = []
         for step, batch in enumerate(dataset):
+            print(step)
+            """
             if step < steps_in_epoch_trained:
                 continue
             loss, score, label = model(batch)
@@ -141,6 +144,8 @@ def train_func(config: Dict):
                 "loss": np.mean(losses),
             },
         )
+        """
+        session.report({})
 
 
 def run_ray(**kwargs):

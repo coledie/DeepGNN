@@ -553,11 +553,19 @@ class MemoryGraph:
         nodes = np.array(nodes, dtype=np.int64)
         features = np.array(features, dtype=np.int32)
 
-        feature_dims = np.array([self.meta.node_feature_data[f"{feature_name}"]["length"] for feature_name in features], dtype=np.int32)
+        feature_dims = np.array(
+            [
+                self.meta.node_feature_data[f"{feature_name}"]["length"]
+                for feature_name in features
+            ],
+            dtype=np.int32,
+        )
 
         result = np.zeros((len(nodes), feature_dims.sum()), dtype=dtype)
 
-        feature_param = np.hstack((features.reshape((-1, 1)), feature_dims.reshape((-1, 1))))
+        feature_param = np.hstack(
+            (features.reshape((-1, 1)), feature_dims.reshape((-1, 1)))
+        )
         features_in_bytes = feature_param.copy()
         features_in_bytes *= (1, result.itemsize)
 

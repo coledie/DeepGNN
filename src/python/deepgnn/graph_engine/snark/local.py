@@ -193,12 +193,11 @@ class Client(Graph):
         timestamps: Union[List[int], np.ndarray] = None,
     ) -> np.ndarray:
         """Fetch node features."""
-        assert len(features.shape) == 2
-        assert features.shape[-1] == 2
+        assert len(features.shape) == 1
         for feature in features:
-            if feature[0] >= self.graph.meta._node_feature_count:
+            if feature >= self.graph.meta._node_feature_count:
                 self.logger.error(
-                    f"Requesting feature with id #{feature[0]} that is larger than number of the node features {self.graph.meta._node_feature_count} in the graph"
+                    f"Requesting feature with id #{feature} that is larger than number of the node features {self.graph.meta._node_feature_count} in the graph"
                 )
 
         return self.graph.node_features(
@@ -279,12 +278,11 @@ class Client(Graph):
         """Fetch edge features."""
         edges = np.array(edges, dtype=np.int64)
         features = np.array(features, dtype=np.int32)
-        assert len(features.shape) == 2
-        assert features.shape[-1] == 2
+        assert len(features.shape) == 1
         for feature in features:
-            if feature[0] >= self.graph.meta._edge_feature_count:
+            if feature >= self.graph.meta._edge_feature_count:
                 self.logger.error(
-                    f"Requesting feature with id #{feature[0]} that is larger than number of the edge features {self.graph.meta._edge_feature_count} in the graph"
+                    f"Requesting feature with id #{feature} that is larger than number of the edge features {self.graph.meta._edge_feature_count} in the graph"
                 )
 
         return self.graph.edge_features(

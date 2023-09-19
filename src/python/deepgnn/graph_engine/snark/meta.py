@@ -11,7 +11,7 @@ from deepgnn.graph_engine.snark._lib import _get_c_lib
 import platform
 
 """Version of binary files produced by converters to communicate breaking changes requiring regeneration of binary files."""
-BINARY_DATA_VERSION = "v2"
+BINARY_DATA_VERSION = "v3"
 
 
 # Use custom separators in case we want to download data from remote filesystems.
@@ -185,6 +185,8 @@ class Meta:
         self.edge_type_count = meta["edge_type_count"]
         self._node_feature_count = meta["node_feature_count"]
         self._edge_feature_count = meta["edge_feature_count"]
+        self.node_feature_data = meta["node_feature_data"]
+        self.edge_feature_data = meta["edge_feature_data"]
         self.partition_count = len(meta["partitions"])
         self._node_weights = [0.0] * self.node_type_count
         self._edge_weights = [0.0] * self.edge_type_count

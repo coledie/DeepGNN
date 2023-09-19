@@ -165,6 +165,8 @@ class BinaryWriter:
         """Close output binary files."""
         self.node_feature_count = self.node_writer.feature_writer.node_feature_count
         self.edge_feature_count = self.edge_writer.feature_writer.edge_feature_count
+        self.node_feature_data = self.node_writer.feature_writer.node_feature_data
+        self.edge_feature_data = self.edge_writer.feature_writer.edge_feature_data
         self.node_writer.close()
         self.edge_writer.close()
         self.node_alias.close()
@@ -267,6 +269,7 @@ class NodeFeatureWriter:
         self.nfd_pos = self.nfd.tell()
 
         self.node_feature_count = 0
+        self.node_feature_data = {}
 
     def add(
         self,
@@ -287,6 +290,12 @@ class NodeFeatureWriter:
             if k is not None:
                 self.nfd_pos += self.nfd.write(k)
         if i + 1 > self.node_feature_count:
+            for i, k in enumerate(features):
+                if features is None or isinstance(features, (tuple)):
+                    continue
+                if i + 1 > self.node_feature_count:
+                    self.node_feature_data[f"{i}"] = {"length": len(k)}
+
             self.node_feature_count = i + 1
 
     def close(self):
@@ -438,6 +447,7 @@ class EdgeFeatureWriter:
         )
         self.efd_pos = self.efd.tell()
         self.edge_feature_count = 0
+        self.edge_feature_data = {}
 
     def add(
         self,
@@ -457,6 +467,11 @@ class EdgeFeatureWriter:
             if k is not None:
                 self.efd_pos += self.efd.write(k)
         if i + 1 > self.edge_feature_count:
+            for i, k in enumerate(features):
+                if features is None or isinstance(features, (tuple)):
+                    continue
+                if i + 1 > self.edge_feature_count:
+                    self.edge_feature_data[f"{i}"] = {"length": len(k)}
             self.edge_feature_count = i + 1
         return features_written
 

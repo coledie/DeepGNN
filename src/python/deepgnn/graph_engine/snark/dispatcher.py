@@ -166,6 +166,8 @@ class PipeDispatcher(Dispatcher):
             self.edge_feature_count = max(
                 self.edge_feature_count, output["edge_feature_count"]
             )
+            self.node_feature_data = output["node_feature_data"]
+            self.edge_feature_data = output["edge_feature_data"]
             self.partitions.append(output["partition"])
 
             assert flag == FLAG_WORKER_FINISHED_PROCESSING

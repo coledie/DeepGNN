@@ -543,7 +543,7 @@ class MemoryGraph:
 
         Args:
             nodes (np.array): list of nodes
-            features (np.array): list of feature ids and sizes: [[feature_0, size_0], ..., [feature_n, size_n]]
+            features (np.array): list of feature ids: [feature_0, ..., feature_n]
             dtype (np.dtype): feature types to extract
             timestamps (np.array): list of timestamps corresponding to each node
 
@@ -552,10 +552,13 @@ class MemoryGraph:
         """
         nodes = np.array(nodes, dtype=np.int64)
         features = np.array(features, dtype=np.int32)
-        assert features.shape[1] == 2
 
-        result = np.zeros((len(nodes), features[:, 1].sum()), dtype=dtype)
-        features_in_bytes = features.copy()
+        feature_dims = np.array([self.meta.node_feature_data[f"{feature_name}"]["length"] for feature_name in features], dtype=np.int32)
+
+        result = np.zeros((len(nodes), feature_dims.sum()), dtype=dtype)
+
+        feature_param = np.hstack((features.reshape((-1, 1)), feature_dims.reshape((-1, 1))))
+        features_in_bytes = feature_param.copy()
         features_in_bytes *= (1, result.itemsize)
 
         self._retryer(
@@ -566,6 +569,7 @@ class MemoryGraph:
             None
             if timestamps is None or len(timestamps) == 0
             else np.array(timestamps, dtype=np.int64).ctypes.data_as(POINTER(c_int64)),
+            features_in_bytes.ctypes.data_as(POINTER(c_int32)),
             features_in_bytes.ctypes.data_as(POINTER(c_int32)),
             c_size_t(len(features)),
             result.ctypes.data_as(POINTER(c_uint8)),
@@ -684,7 +688,6 @@ class MemoryGraph:
         edge_dst = np.array(edge_dst, dtype=np.int64)
         edge_tp = np.array(edge_tp, dtype=np.int32)
         features = np.array(features, dtype=np.int32)
-        assert features.shape[1] == 2
 
         result = np.zeros((len(edge_src), features[:, 1].sum()), dtype=dtype)
         features_in_bytes = features.copy()

@@ -34,8 +34,8 @@ class GATQuery:
     def __init__(self, p: GATQueryParameter):
         """Initialize graph query."""
         self.p = p
-        self.label_meta = np.array([[p.label_idx, p.label_dim]], np.int32)
-        self.feat_meta = np.array([[p.feature_idx, p.feature_dim]], np.int32)
+        self.label_meta = np.array([p.label_idx], np.int32)
+        self.feat_meta = np.array([p.feature_idx], np.int32)
 
     def query_training(self, graph: Graph, inputs: np.ndarray) -> tuple:
         """Query used to generate data for training."""

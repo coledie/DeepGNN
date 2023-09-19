@@ -74,6 +74,8 @@ def converter_process(
                 "edge_type_count": binary_writer.edge_type_num,
                 "node_feature_count": binary_writer.node_feature_count,
                 "edge_feature_count": binary_writer.edge_feature_count,
+                "node_feature_data": binary_writer.node_feature_data,
+                "edge_feature_data": binary_writer.edge_feature_data,
                 "partition": {
                     "id": suffix,
                     "node_weight": binary_writer.node_weight,

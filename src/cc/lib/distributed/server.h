@@ -11,6 +11,7 @@
 #include <grpcpp/create_channel.h>
 #include <grpcpp/grpcpp.h>
 
+#include "src/cc/lib/distributed/graph_container.h"
 #include "src/cc/lib/distributed/graph_engine.h"
 #include "src/cc/lib/distributed/graph_sampler.h"
 #include "src/cc/lib/graph/graph.h"
@@ -20,7 +21,11 @@ namespace snark
 class GRPCServer final
 {
   public:
-    GRPCServer(std::shared_ptr<snark::GraphEngineServiceImpl> engine_service_impl,
+    GRPCServer(std::shared_ptr<snark::GraphEngineServiceImpl> graph_engine,
+               std::shared_ptr<snark::GraphSamplerServiceImpl> sampler_service_impl, std::string host_name,
+               std::string ssl_key, std::string ssl_cert, std::string ssl_root);
+
+    GRPCServer(std::shared_ptr<snark::GraphContainer> graph_container,
                std::shared_ptr<snark::GraphSamplerServiceImpl> sampler_service_impl, std::string host_name,
                std::string ssl_key, std::string ssl_cert, std::string ssl_root);
 
@@ -31,6 +36,8 @@ class GRPCServer final
     void HandleRpcs(size_t index);
 
   private:
+    void Construct(std::string host_name, std::string ssl_key, std::string ssl_cert, std::string ssl_root);
+
     std::vector<std::unique_ptr<grpc::ServerCompletionQueue>> m_cqs;
 
     // Sampler/Engine split helps us to manage runtime:
@@ -39,7 +46,7 @@ class GRPCServer final
     //   and interrupt existing clients, new clients can connect to old and new
     //   endpoints.
     snark::GraphEngine::AsyncService m_engine_service;
-    std::shared_ptr<snark::GraphEngine::Service> m_engine_service_impl;
+    std::shared_ptr<snark::GraphContainer> m_graph_container;
     snark::GraphSampler::AsyncService m_sampler_service;
     std::shared_ptr<snark::GraphSampler::Service> m_sampler_service_impl;
     std::unique_ptr<grpc::Server> m_server;

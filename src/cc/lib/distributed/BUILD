@@ -27,6 +27,7 @@ cc_library(
     srcs = [
         "call_data.cc",
         "client.cc",
+        "graph_container.cc",
         "graph_engine.cc",
         "graph_sampler.cc",
         "server.cc",
@@ -34,6 +35,7 @@ cc_library(
     hdrs = [
         "call_data.h",
         "client.h",
+        "graph_container.h",
         "graph_engine.h",
         "graph_sampler.h",
         "server.h",

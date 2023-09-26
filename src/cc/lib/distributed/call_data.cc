@@ -17,7 +17,7 @@ CallData::CallData(grpc::ServerCompletionQueue &cq) : m_cq(cq), m_status(CREATE)
 }
 
 NodeFeaturesCallData::NodeFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                           snark::GraphEngine::Service &service_impl)
+                                           snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -46,7 +46,7 @@ void NodeFeaturesCallData::Proceed()
 }
 
 EdgeFeaturesCallData::EdgeFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                           snark::GraphEngine::Service &service_impl)
+                                           snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -74,7 +74,7 @@ void EdgeFeaturesCallData::Proceed()
 }
 
 GetNeighborCountCallData::GetNeighborCountCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                                   snark::GraphEngine::Service &service_impl)
+                                                   snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 
 {
@@ -103,7 +103,7 @@ void GetNeighborCountCallData::Proceed()
 }
 
 GetNeighborsCallData::GetNeighborsCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                           snark::GraphEngine::Service &service_impl)
+                                           snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -132,7 +132,7 @@ void GetNeighborsCallData::Proceed()
 
 GetLastNCreatedNeighborCallData::GetLastNCreatedNeighborCallData(GraphEngine::AsyncService &service,
                                                                  grpc::ServerCompletionQueue &cq,
-                                                                 snark::GraphEngine::Service &service_impl)
+                                                                 snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -160,7 +160,7 @@ void GetLastNCreatedNeighborCallData::Proceed()
 }
 
 SampleNeighborsCallData::SampleNeighborsCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                                 snark::GraphEngine::Service &service_impl)
+                                                 snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -189,7 +189,7 @@ void SampleNeighborsCallData::Proceed()
 
 UniformSampleNeighborsCallData::UniformSampleNeighborsCallData(GraphEngine::AsyncService &service,
                                                                grpc::ServerCompletionQueue &cq,
-                                                               snark::GraphEngine::Service &service_impl)
+                                                               snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -273,7 +273,7 @@ void SampleElementsCallData::Proceed()
 }
 
 GetMetadataCallData::GetMetadataCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                         snark::GraphEngine::Service &service_impl)
+                                         snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -301,7 +301,7 @@ void GetMetadataCallData::Proceed()
 }
 
 NodeTypesCallData::NodeTypesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                     snark::GraphEngine::Service &service_impl)
+                                     snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -330,7 +330,7 @@ void NodeTypesCallData::Proceed()
 
 NodeSparseFeaturesCallData::NodeSparseFeaturesCallData(GraphEngine::AsyncService &service,
                                                        grpc::ServerCompletionQueue &cq,
-                                                       snark::GraphEngine::Service &service_impl)
+                                                       snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -359,7 +359,7 @@ void NodeSparseFeaturesCallData::Proceed()
 
 EdgeSparseFeaturesCallData::EdgeSparseFeaturesCallData(GraphEngine::AsyncService &service,
                                                        grpc::ServerCompletionQueue &cq,
-                                                       snark::GraphEngine::Service &service_impl)
+                                                       snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -388,7 +388,7 @@ void EdgeSparseFeaturesCallData::Proceed()
 
 NodeStringFeaturesCallData::NodeStringFeaturesCallData(GraphEngine::AsyncService &service,
                                                        grpc::ServerCompletionQueue &cq,
-                                                       snark::GraphEngine::Service &service_impl)
+                                                       snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();
@@ -417,7 +417,7 @@ void NodeStringFeaturesCallData::Proceed()
 
 EdgeStringFeaturesCallData::EdgeStringFeaturesCallData(GraphEngine::AsyncService &service,
                                                        grpc::ServerCompletionQueue &cq,
-                                                       snark::GraphEngine::Service &service_impl)
+                                                       snark::GraphContainer &service_impl)
     : CallData(cq), m_responder(&m_ctx), m_service_impl(service_impl), m_service(service)
 {
     Proceed();

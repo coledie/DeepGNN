@@ -14,6 +14,7 @@
 #include <numeric>
 #include <queue>
 #include <random>
+#include <string>
 #include <thread>
 #include <type_traits>
 
@@ -357,7 +358,8 @@ std::function<void()> GRPCClient::AsyncCompleteRpc(size_t index)
     };
 }
 
-void GRPCClient::GetNodeType(std::span<const NodeId> node_ids, std::span<Type> output, Type default_type)
+void GRPCClient::GetNodeType(std::span<const NodeId> node_ids, std::span<Type> output, Type default_type,
+                             std::string graph_id)
 {
     assert(node_ids.size() == output.size());
 
@@ -410,7 +412,7 @@ void GRPCClient::GetNodeType(std::span<const NodeId> node_ids, std::span<Type> o
 }
 
 void GRPCClient::GetNodeFeature(std::span<const NodeId> node_ids, std::span<const snark::Timestamp> timestamps,
-                                std::span<FeatureMeta> features, std::span<uint8_t> output)
+                                std::span<FeatureMeta> features, std::span<uint8_t> output, std::string graph_id)
 {
     assert(std::accumulate(std::begin(features), std::end(features), size_t(0),
                            [](size_t val, const auto &f) { return val + f.second; }) *
@@ -517,7 +519,7 @@ void GRPCClient::GetNodeFeature(std::span<const NodeId> node_ids, std::span<cons
 
 void GRPCClient::GetEdgeFeature(std::span<const NodeId> edge_src_ids, std::span<const NodeId> edge_dst_ids,
                                 std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
-                                std::span<FeatureMeta> features, std::span<uint8_t> output)
+                                std::span<FeatureMeta> features, std::span<uint8_t> output, std::string graph_id)
 {
     const auto len = edge_types.size();
     assert(std::accumulate(std::begin(features), std::end(features), size_t(0),
@@ -597,7 +599,7 @@ void GRPCClient::GetEdgeFeature(std::span<const NodeId> edge_src_ids, std::span<
 void GRPCClient::GetNodeSparseFeature(std::span<const NodeId> node_ids, std::span<const snark::Timestamp> timestamps,
                                       std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
                                       std::vector<std::vector<int64_t>> &out_indices,
-                                      std::vector<std::vector<uint8_t>> &out_values)
+                                      std::vector<std::vector<uint8_t>> &out_values, std::string graph_id)
 {
     assert(out_indices.size() == features.size());
     assert(out_dimensions.size() == features.size());
@@ -617,7 +619,7 @@ void GRPCClient::GetEdgeSparseFeature(std::span<const NodeId> edge_src_ids, std:
                                       std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
                                       std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
                                       std::vector<std::vector<int64_t>> &out_indices,
-                                      std::vector<std::vector<uint8_t>> &out_values)
+                                      std::vector<std::vector<uint8_t>> &out_values, std::string graph_id)
 {
     const auto len = edge_types.size();
     assert(len == edge_src_ids.size());
@@ -636,7 +638,7 @@ void GRPCClient::GetEdgeSparseFeature(std::span<const NodeId> edge_src_ids, std:
 
 void GRPCClient::GetNodeStringFeature(std::span<const NodeId> node_ids, std::span<const snark::Timestamp> timestamps,
                                       std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
-                                      std::vector<uint8_t> &out_values)
+                                      std::vector<uint8_t> &out_values, std::string graph_id)
 {
     NodeSparseFeaturesRequest request;
     *request.mutable_node_ids() = {std::begin(node_ids), std::end(node_ids)};
@@ -649,7 +651,7 @@ void GRPCClient::GetNodeStringFeature(std::span<const NodeId> node_ids, std::spa
 void GRPCClient::GetEdgeStringFeature(std::span<const NodeId> edge_src_ids, std::span<const NodeId> edge_dst_ids,
                                       std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
                                       std::span<const FeatureId> features, std::span<int64_t> out_dimensions,
-                                      std::vector<uint8_t> &out_values)
+                                      std::vector<uint8_t> &out_values, std::string graph_id)
 {
     const auto len = edge_types.size();
     assert(len == edge_src_ids.size());
@@ -667,7 +669,8 @@ void GRPCClient::GetEdgeStringFeature(std::span<const NodeId> edge_src_ids, std:
 }
 
 void GRPCClient::NeighborCount(std::span<const NodeId> node_ids, std::span<const Type> edge_types,
-                               std::span<const snark::Timestamp> timestamps, std::span<uint64_t> output_neighbor_counts)
+                               std::span<const snark::Timestamp> timestamps, std::span<uint64_t> output_neighbor_counts,
+                               std::string graph_id)
 {
     GetNeighborsRequest request;
 
@@ -722,7 +725,7 @@ void GRPCClient::LastNCreated(bool return_edge_created_ts, std::span<const NodeI
                               size_t count, std::span<NodeId> output_neighbor_ids,
                               std::span<Type> output_neighbor_types, std::span<float> neighbors_weights,
                               std::span<Timestamp> output_timestamps, NodeId default_node_id, float default_weight,
-                              Type default_edge_type, Timestamp default_timestamp)
+                              Type default_edge_type, Timestamp default_timestamp, std::string graph_id)
 {
     GetLastNCreatedNeighborsRequest request;
 
@@ -829,7 +832,7 @@ void GRPCClient::FullNeighbor(bool return_edge_created_ts, std::span<const NodeI
                               std::span<const Type> edge_types, std::span<const snark::Timestamp> timestamps,
                               std::vector<NodeId> &output_nodes, std::vector<Type> &output_types,
                               std::vector<float> &output_weights, std::vector<Timestamp> &out_edge_created_ts,
-                              std::span<uint64_t> output_neighbor_counts)
+                              std::span<uint64_t> output_neighbor_counts, std::string graph_id)
 {
     GetNeighborsRequest request;
 
@@ -915,7 +918,7 @@ void GRPCClient::WeightedSampleNeighbor(bool return_edge_created_ts, int64_t see
                                         size_t count, std::span<NodeId> output_neighbors, std::span<Type> output_types,
                                         std::span<float> output_weights,
                                         std::span<snark::Timestamp> output_edge_created_ts, NodeId default_node_id,
-                                        float default_weight, Type default_edge_type)
+                                        float default_weight, Type default_edge_type, std::string graph_id)
 {
     snark::Xoroshiro128PlusGenerator engine(seed);
     boost::random::uniform_int_distribution<int64_t> subseed(std::numeric_limits<int64_t>::min(),
@@ -1068,7 +1071,7 @@ void GRPCClient::UniformSampleNeighbor(bool without_replacement, bool return_edg
                                        std::span<const snark::Timestamp> timestamps, size_t count,
                                        std::span<NodeId> output_neighbors, std::span<Type> output_types,
                                        std::span<snark::Timestamp> output_edge_created_ts, NodeId default_node_id,
-                                       Type default_type)
+                                       Type default_type, std::string graph_id)
 {
     snark::Xoroshiro128PlusGenerator engine(seed);
     boost::random::uniform_int_distribution<int64_t> subseed(std::numeric_limits<int64_t>::min(),
@@ -1206,7 +1209,8 @@ void GRPCClient::UniformSampleNeighbor(bool without_replacement, bool return_edg
     WaitForFutures(futures);
 }
 
-uint64_t GRPCClient::CreateSampler(bool is_edge, CreateSamplerRequest_Category category, std::span<Type> types)
+uint64_t GRPCClient::CreateSampler(bool is_edge, CreateSamplerRequest_Category category, std::span<Type> types,
+                                   std::string graph_id)
 {
     snark::CreateSamplerRequest request;
     *request.mutable_enitity_types() = {std::begin(types), std::end(types)};
@@ -1248,7 +1252,7 @@ uint64_t GRPCClient::CreateSampler(bool is_edge, CreateSamplerRequest_Category c
 }
 
 void GRPCClient::SampleNodes(int64_t seed, uint64_t sampler_id, std::span<NodeId> out_node_ids,
-                             std::span<Type> out_types)
+                             std::span<Type> out_types, std::string graph_id)
 {
     snark::SampleRequest request;
     request.set_is_edge(false);
@@ -1303,7 +1307,7 @@ void GRPCClient::SampleNodes(int64_t seed, uint64_t sampler_id, std::span<NodeId
 }
 
 void GRPCClient::SampleEdges(int64_t seed, uint64_t sampler_id, std::span<NodeId> out_src_node_ids,
-                             std::span<Type> out_types, std::span<NodeId> out_dst_node_ids)
+                             std::span<Type> out_types, std::span<NodeId> out_dst_node_ids, std::string graph_id)
 {
     snark::SampleRequest request;
     request.set_is_edge(true);
@@ -1354,7 +1358,7 @@ void GRPCClient::SampleEdges(int64_t seed, uint64_t sampler_id, std::span<NodeId
     WaitForFutures(futures);
 }
 
-void GRPCClient::WriteMetadata(std::filesystem::path path)
+void GRPCClient::WriteMetadata(std::filesystem::path path, std::string graph_id)
 {
     EmptyMessage request;
     MetadataReply reply;

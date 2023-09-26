@@ -7,6 +7,7 @@
 #include <memory>
 #include <thread>
 
+#include "src/cc/lib/distributed/graph_container.h"
 #include "src/cc/lib/distributed/graph_engine.h"
 #include "src/cc/lib/distributed/graph_sampler.h"
 #include "src/cc/lib/distributed/service.grpc.pb.h"
@@ -43,7 +44,7 @@ class NodeFeaturesCallData final : public CallData
 {
   public:
     NodeFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                         snark::GraphEngine::Service &service_impl);
+                         snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -51,7 +52,7 @@ class NodeFeaturesCallData final : public CallData
     NodeFeaturesRequest m_request;
     NodeFeaturesReply m_reply;
     grpc::ServerAsyncResponseWriter<NodeFeaturesReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -59,7 +60,7 @@ class EdgeFeaturesCallData final : public CallData
 {
   public:
     EdgeFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                         snark::GraphEngine::Service &service_impl);
+                         snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -67,7 +68,7 @@ class EdgeFeaturesCallData final : public CallData
     EdgeFeaturesRequest m_request;
     EdgeFeaturesReply m_reply;
     grpc::ServerAsyncResponseWriter<EdgeFeaturesReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -75,7 +76,7 @@ class GetNeighborCountCallData final : public CallData
 {
   public:
     GetNeighborCountCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                             snark::GraphEngine::Service &service_impl);
+                             snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -83,7 +84,7 @@ class GetNeighborCountCallData final : public CallData
     GetNeighborsRequest m_request;
     GetNeighborCountsReply m_reply;
     grpc::ServerAsyncResponseWriter<GetNeighborCountsReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -91,7 +92,7 @@ class GetNeighborsCallData final : public CallData
 {
   public:
     GetNeighborsCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                         snark::GraphEngine::Service &service_impl);
+                         snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -99,7 +100,7 @@ class GetNeighborsCallData final : public CallData
     GetNeighborsRequest m_request;
     GetNeighborsReply m_reply;
     grpc::ServerAsyncResponseWriter<GetNeighborsReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -107,7 +108,7 @@ class GetLastNCreatedNeighborCallData final : public CallData
 {
   public:
     GetLastNCreatedNeighborCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                    snark::GraphEngine::Service &service_impl);
+                                    snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -115,7 +116,7 @@ class GetLastNCreatedNeighborCallData final : public CallData
     GetLastNCreatedNeighborsRequest m_request;
     GetNeighborsReply m_reply;
     grpc::ServerAsyncResponseWriter<GetNeighborsReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -123,7 +124,7 @@ class SampleNeighborsCallData final : public CallData
 {
   public:
     SampleNeighborsCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                            snark::GraphEngine::Service &service_impl);
+                            snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -131,7 +132,7 @@ class SampleNeighborsCallData final : public CallData
     WeightedSampleNeighborsRequest m_request;
     WeightedSampleNeighborsReply m_reply;
     grpc::ServerAsyncResponseWriter<WeightedSampleNeighborsReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -139,7 +140,7 @@ class UniformSampleNeighborsCallData final : public CallData
 {
   public:
     UniformSampleNeighborsCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                                   snark::GraphEngine::Service &service_impl);
+                                   snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -147,7 +148,7 @@ class UniformSampleNeighborsCallData final : public CallData
     UniformSampleNeighborsRequest m_request;
     UniformSampleNeighborsReply m_reply;
     grpc::ServerAsyncResponseWriter<UniformSampleNeighborsReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -187,7 +188,7 @@ class GetMetadataCallData final : public CallData
 {
   public:
     GetMetadataCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                        snark::GraphEngine::Service &service_impl);
+                        snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -195,7 +196,7 @@ class GetMetadataCallData final : public CallData
     EmptyMessage m_request;
     MetadataReply m_reply;
     grpc::ServerAsyncResponseWriter<MetadataReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -203,7 +204,7 @@ class NodeTypesCallData final : public CallData
 {
   public:
     NodeTypesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                      snark::GraphEngine::Service &service_impl);
+                      snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -211,7 +212,7 @@ class NodeTypesCallData final : public CallData
     NodeTypesRequest m_request;
     NodeTypesReply m_reply;
     grpc::ServerAsyncResponseWriter<NodeTypesReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -219,7 +220,7 @@ class NodeSparseFeaturesCallData final : public CallData
 {
   public:
     NodeSparseFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                               snark::GraphEngine::Service &service_impl);
+                               snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -227,7 +228,7 @@ class NodeSparseFeaturesCallData final : public CallData
     NodeSparseFeaturesRequest m_request;
     SparseFeaturesReply m_reply;
     grpc::ServerAsyncResponseWriter<SparseFeaturesReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -235,7 +236,7 @@ class EdgeSparseFeaturesCallData final : public CallData
 {
   public:
     EdgeSparseFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                               snark::GraphEngine::Service &service_impl);
+                               snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -243,7 +244,7 @@ class EdgeSparseFeaturesCallData final : public CallData
     EdgeSparseFeaturesRequest m_request;
     SparseFeaturesReply m_reply;
     grpc::ServerAsyncResponseWriter<SparseFeaturesReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -251,7 +252,7 @@ class NodeStringFeaturesCallData final : public CallData
 {
   public:
     NodeStringFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                               snark::GraphEngine::Service &service_impl);
+                               snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -259,7 +260,7 @@ class NodeStringFeaturesCallData final : public CallData
     NodeSparseFeaturesRequest m_request;
     StringFeaturesReply m_reply;
     grpc::ServerAsyncResponseWriter<StringFeaturesReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 
@@ -267,7 +268,7 @@ class EdgeStringFeaturesCallData final : public CallData
 {
   public:
     EdgeStringFeaturesCallData(GraphEngine::AsyncService &service, grpc::ServerCompletionQueue &cq,
-                               snark::GraphEngine::Service &service_impl);
+                               snark::GraphContainer &service_impl);
 
     void Proceed() override;
 
@@ -275,7 +276,7 @@ class EdgeStringFeaturesCallData final : public CallData
     EdgeSparseFeaturesRequest m_request;
     StringFeaturesReply m_reply;
     grpc::ServerAsyncResponseWriter<StringFeaturesReply> m_responder;
-    snark::GraphEngine::Service &m_service_impl;
+    snark::GraphContainer &m_service_impl;
     GraphEngine::AsyncService &m_service;
 };
 } // namespace snark

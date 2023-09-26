@@ -117,13 +117,9 @@ class EmptyGraphEngine final : public snark::GraphEngine::Service
     }
 };
 
-GRPCServer::GRPCServer(std::shared_ptr<snark::GraphEngineServiceImpl> engine_service_impl,
-                       std::shared_ptr<snark::GraphSamplerServiceImpl> sampler_service_impl, std::string host_name,
-                       std::string ssl_key, std::string ssl_cert, std::string ssl_root)
-    : m_engine_service_impl(std::move(engine_service_impl)), m_sampler_service_impl(std::move(sampler_service_impl)),
-      m_shutdown(false)
+void GRPCServer::Construct(std::string host_name, std::string ssl_key, std::string ssl_cert, std::string ssl_root)
 {
-    if (!m_engine_service_impl && !m_sampler_service_impl)
+    if (!m_graph_container && !m_sampler_service_impl)
     {
         RAW_LOG_FATAL("No services to start");
     }
@@ -143,9 +139,15 @@ GRPCServer::GRPCServer(std::shared_ptr<snark::GraphEngineServiceImpl> engine_ser
     builder.SetMaxReceiveMessageSize(-1);
 
     builder.AddListeningPort(host_name, std::move(creds));
-    if (!m_engine_service_impl)
+    if (!m_graph_container)
     {
-        m_engine_service_impl = std::make_shared<EmptyGraphEngine>();
+        m_graph_container = std::make_shared<snark::GraphContainer>(
+            std::unordered_map<std::string, std::shared_ptr<snark::GraphEngine::Service>>{
+                {"0", std::make_shared<EmptyGraphEngine>()}});
+    }
+    if (m_graph_container->m_container.empty())
+    {
+        m_graph_container->m_container["0"] = std::make_shared<EmptyGraphEngine>();
     }
     builder.RegisterService(&m_engine_service);
 
@@ -163,23 +165,23 @@ GRPCServer::GRPCServer(std::shared_ptr<snark::GraphEngineServiceImpl> engine_ser
     m_server = builder.BuildAndStart();
     for (auto &queue : m_cqs)
     {
-        if (m_engine_service_impl)
+        if (m_graph_container)
         {
-            new GetNeighborsCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new GetNeighborCountCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new GetLastNCreatedNeighborCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new SampleNeighborsCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new UniformSampleNeighborsCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new NodeFeaturesCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new EdgeFeaturesCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new NodeSparseFeaturesCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new EdgeSparseFeaturesCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new NodeStringFeaturesCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new EdgeStringFeaturesCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new GetMetadataCallData(m_engine_service, *queue, *m_engine_service_impl);
-            new NodeTypesCallData(m_engine_service, *queue, *m_engine_service_impl);
+            new GetNeighborsCallData(m_engine_service, *queue, *m_graph_container);
+            new GetNeighborCountCallData(m_engine_service, *queue, *m_graph_container);
+            new GetLastNCreatedNeighborCallData(m_engine_service, *queue, *m_graph_container);
+            new SampleNeighborsCallData(m_engine_service, *queue, *m_graph_container);
+            new UniformSampleNeighborsCallData(m_engine_service, *queue, *m_graph_container);
+            new NodeFeaturesCallData(m_engine_service, *queue, *m_graph_container);
+            new EdgeFeaturesCallData(m_engine_service, *queue, *m_graph_container);
+            new NodeSparseFeaturesCallData(m_engine_service, *queue, *m_graph_container);
+            new EdgeSparseFeaturesCallData(m_engine_service, *queue, *m_graph_container);
+            new NodeStringFeaturesCallData(m_engine_service, *queue, *m_graph_container);
+            new EdgeStringFeaturesCallData(m_engine_service, *queue, *m_graph_container);
+            new GetMetadataCallData(m_engine_service, *queue, *m_graph_container);
+            new NodeTypesCallData(m_engine_service, *queue, *m_graph_container);
         }
-        if (m_sampler_service_impl)
+        if (m_graph_container)
         {
             new CreateSamplerCallData(m_sampler_service, *queue, *m_sampler_service_impl);
             new SampleElementsCallData(m_sampler_service, *queue, *m_sampler_service_impl);
@@ -190,6 +192,30 @@ GRPCServer::GRPCServer(std::shared_ptr<snark::GraphEngineServiceImpl> engine_ser
     {
         m_runner_threads.emplace_back(&GRPCServer::HandleRpcs, this, thread_num);
     }
+}
+
+GRPCServer::GRPCServer(std::shared_ptr<snark::GraphEngineServiceImpl> graph_engine,
+                       std::shared_ptr<snark::GraphSamplerServiceImpl> sampler_service_impl, std::string host_name,
+                       std::string ssl_key, std::string ssl_cert, std::string ssl_root)
+    : m_graph_container(std::make_shared<snark::GraphContainer>(
+          std::unordered_map<std::string, std::shared_ptr<snark::GraphEngine::Service>>{})),
+      m_sampler_service_impl(std::move(sampler_service_impl)), m_shutdown(false)
+{
+    if (graph_engine)
+    {
+        m_graph_container->m_container["0"] = graph_engine;
+    }
+
+    Construct(host_name, ssl_key, ssl_cert, ssl_root);
+}
+
+GRPCServer::GRPCServer(std::shared_ptr<snark::GraphContainer> graph_container,
+                       std::shared_ptr<snark::GraphSamplerServiceImpl> sampler_service_impl, std::string host_name,
+                       std::string ssl_key, std::string ssl_cert, std::string ssl_root)
+    : m_graph_container(std::move(graph_container)), m_sampler_service_impl(std::move(sampler_service_impl)),
+      m_shutdown(false)
+{
+    Construct(host_name, ssl_key, ssl_cert, ssl_root);
 }
 
 GRPCServer::~GRPCServer()
